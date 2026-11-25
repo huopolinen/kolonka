@@ -17,11 +17,13 @@
 
 </div>
 
-## Why
+## Why I built it
 
-When you run several Claude Code / Codex / Aider sessions plus dev servers, tests and logs, a row of horizontal tabs stops working. Kolonka keeps every shell in a **sidebar column**, grouped into **workspaces** — one per project — and shows at a glance which agent is **working**, which one **needs you**, and which one is **done**.
+Kolonka is directly inspired by [**agterm**](https://github.com/umputun/agterm) — and, more broadly, by the terminals on the Mac. On macOS you get tools that feel considered: fast, good-looking, organized around how you actually work, and scriptable all the way down. agterm in particular nailed the idea for the age of coding agents: a deliberately small interface, sessions in named workspaces, a status for each agent, and a complete control API on top.
 
-Everything you can do with the mouse, a script or an agent can do too, through a local HTTP API and the bundled `kolonka` CLI.
+Then I went back to Windows and was honestly disappointed. The terminals there either look and feel dated, or stop at a row of horizontal tabs that falls apart once you have five agents, two dev servers and a log tail running. None of them told me at a glance which agent was working and which one was waiting for me, and none of them could be driven by the agents themselves.
+
+So I built the terminal I wanted on Windows. Kolonka keeps every shell in a **sidebar column**, grouped into **workspaces** — one per project — and shows which agent is **working**, which one **needs you**, and which one is **done**. Everything you can do with the mouse, a script or an agent can do too, through a local HTTP API and the bundled `kolonka` CLI. And because talking is often faster than typing a prompt, you can hold <kbd>Space</kbd> and just say it.
 
 *Kolonka* (Russian *колонка*) means "column".
 
@@ -194,7 +196,7 @@ Split panes and overlays · themes · Windows' built-in speech engine as a dicta
 
 ## Acknowledgements
 
-Kolonka is inspired by [agterm](https://github.com/umputun/agterm) by Umputun — a macOS terminal with the same idea of a small UI and a complete control surface. Kolonka is an independent implementation for Windows and shares no code with it.
+Huge thanks to [agterm](https://github.com/umputun/agterm) by Umputun — the macOS terminal that inspired Kolonka's model of workspaces, agent status and a complete control surface — and to the Mac terminal scene in general for showing how good a terminal can feel. Kolonka is an independent implementation for Windows and shares no code with agterm.
 
 ## License
 
