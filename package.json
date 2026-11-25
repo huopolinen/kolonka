@@ -1,0 +1,99 @@
+{
+  "name": "kolonka",
+  "productName": "Kolonka",
+  "version": "0.1.0",
+  "description": "A Windows terminal with vertical tabs, workspaces, hold-to-talk voice input and a full control API for scripts and coding agents",
+  "main": "src/main/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "set KOLONKA_DEBUG=1&& electron .",
+    "icon": "electron tools/make-icon.js",
+    "dist": "electron-builder --win nsis",
+    "pack": "electron-builder --win dir"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/addon-unicode11": "^0.9.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/headless": "^6.0.0",
+    "@xterm/xterm": "^6.0.0",
+    "node-pty": "^1.1.0"
+  },
+  "allowScripts": {
+    "electron@39.8.10": true,
+    "node-pty@1.1.0": true
+  },
+  "license": "MIT",
+  "author": "huopolinen",
+  "devDependencies": {
+    "electron": "^39.8.10",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "dev.kolonka.terminal",
+    "productName": "Kolonka",
+    "copyright": "Copyright © 2026 huopolinen. MIT License",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**",
+      "assets/**",
+      "package.json",
+      "!**/*.map",
+      "!node_modules/node-pty/{src,deps,scripts,third_party,binding.gyp}",
+      "!node_modules/node-pty/prebuilds/{darwin-*,win32-arm64}/**"
+    ],
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "bin"
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icon.ico",
+      "executableName": "Kolonka"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Kolonka",
+      "artifactName": "Kolonka-Setup-${version}.exe",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "include": "build/installer.nsh"
+    }
+  },
+  "homepage": "https://github.com/huopolinen/kolonka",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/huopolinen/kolonka.git"
+  },
+  "bugs": {
+    "url": "https://github.com/huopolinen/kolonka/issues"
+  },
+  "keywords": [
+    "terminal",
+    "windows",
+    "vertical-tabs",
+    "claude-code",
+    "ai-agents",
+    "xterm",
+    "conpty",
+    "voice-input",
+    "whisper"
+  ]
+}
