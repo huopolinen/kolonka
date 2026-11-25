@@ -34,7 +34,7 @@ Everything you can do with the mouse, a script or an agent can do too, through a
 - **Control API + CLI.** Create sessions, type into them, read their screen back, wait for output, set status, send notifications. `kolonka` is on `PATH` inside every Kolonka tab automatically.
 - **Claude Code hooks in one click.** Claude Code reports its own state onto its row.
 - **Your shells.** Git Bash (default when installed), PowerShell 7, Windows PowerShell, cmd — or your own. The current directory is tracked, new tabs open where you are, and the whole layout comes back after a restart.
-- **Pleasant to use.** Mica backdrop, WebGL rendering, command palette, search in scrollback, Ctrl+click links, Windows Terminal–style copy & paste, English and Russian UI.
+- **Pleasant to use.** Mica backdrop, WebGL rendering, command palette, search in scrollback, Ctrl+click links, Windows Terminal–style copy & paste, English UI (Russian available in settings).
 - **Crash reports you control.** If something breaks, Kolonka offers a pre-filled GitHub issue with a scrubbed log — nothing is sent without you.
 
 <table>
@@ -145,7 +145,7 @@ Outside Kolonka the hook exits silently. `kolonka hooks uninstall` removes exact
 
 ```jsonc
 {
-  "language": "auto",                     // auto | en | ru
+  "language": "en",                       // en | ru | auto (follow Windows)
   "defaultShell": "bash",                 // bash | pwsh | powershell | cmd | your own key
   "fontFamily": "'Cascadia Mono', Consolas, monospace",
   "fontSize": 14,

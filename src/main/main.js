@@ -23,7 +23,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
 const DEFAULT_SETTINGS = {
-  language: 'auto',
+  language: 'en',
   defaultShell: 'bash',
   fontFamily: "'Cascadia Mono', 'JetBrains Mono', Consolas, monospace",
   fontSize: 14,
