@@ -301,3 +301,19 @@ test('state.json that cannot be read (EBUSY) is not overwritten until it can be 
   assert.equal(real(path.join(dir, copies[0]), 'utf8'), saved, 'the old layout is kept');
   assert.equal(JSON.parse(real(file, 'utf8')).workspaces[0].name, 'main', 'saving works again');
 });
+
+// ---------- shutdown ----------
+
+test('shutdown: the saved tabs stay as they were, even when the killed shells close themselves (closeOnExit)', async (t) => {
+  const { model, dir } = makeModel(t, { settings: { closeOnExit: true } });
+  const a = model.createSession({ cwd: dir, name: 'keep-a' });
+  const b = model.createSession({ cwd: dir, name: 'keep-b', command: 'ssh host', rerun: true });
+  model.shutdown(); // a quit or "Restart to update"
+  const names = () => JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf8')).workspaces.flatMap((w) => w.sessions.map((s) => [s.name, !!s.rerun]));
+  assert.deepEqual(names(), [['keep-a', false], ['keep-b', true]]);
+  // the killed shells report exit 0 while the process is still quitting
+  a.emitExit(0);
+  b.emitExit(0);
+  await tick(700); // past the closeOnExit delay and the save debounce
+  assert.deepEqual(names(), [['keep-a', false], ['keep-b', true]], 'the tabs (and rerun) come back on the next start');
+});

@@ -3,6 +3,9 @@ name: Release
 # A release is built here, from the tagged commit, never on a developer machine:
 #   git tag v0.2.0 && git push origin v0.2.0   ->  a draft GitHub Release with the installer, its blockmap,
 #   latest.yml, SHA256SUMS.txt and a build provenance attestation; the maintainer reviews and publishes it.
+# Kolonka 0.2.0 and later update themselves from the latest *published* release (electron-updater reads its
+# latest.yml and checks the installer's sha512 against it; the blockmaps make the download differential).
+# A draft or a prerelease is never offered, so publishing the draft is what ships the update.
 # workflow_dispatch with dry_run (the default) and pull requests that change this file build and check
 # everything but keep the files as workflow artifacts and create no release.
 
@@ -79,7 +82,14 @@ jobs:
       # Code signing goes here once the project has a certificate (SignPath Foundation for open source):
       # sign dist/win-unpacked/Kolonka.exe before the installer is built, then the installer itself.
       # latest.yml and the blockmap hold hashes of the installer, so they must be produced after signing,
-      # and the checksums and the attestation below must cover the signed files.
+      # and the checksums and the attestation below must cover the signed files. Set the publisher name
+      # (build.win.signtoolOptions.publisherName) then too: app-update.yml carries it, and electron-updater
+      # refuses an update that is not signed by that publisher.
+
+      # latest.yml names this installer with its real sha512 and size, the blockmap covers it, the installer
+      # needs no elevation, and app-update.yml in the package points at this repository
+      - name: Release files
+        run: node test/smoke/release-files.js
 
       - name: Smoke test of the packaged app
         run: node test/smoke/packaged.js
@@ -156,4 +166,9 @@ jobs:
           else
             gh release create "$tag" "${files[@]}" --draft --verify-tag --title "Kolonka $VERSION" --notes-file notes.md --generate-notes
           fi
+          # what electron-updater will download once the release is published: the assets under the names
+          # latest.yml gives, byte for byte the files checked above
+          mkdir -p uploaded
+          gh release download "$tag" -D uploaded --clobber -p "Kolonka-Setup-$VERSION.exe" -p "Kolonka-Setup-$VERSION.exe.blockmap" -p latest.yml
+          (cd uploaded && sha256sum --strict -c ../SHA256SUMS.txt)
           echo "Draft release: $(gh release view "$tag" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"

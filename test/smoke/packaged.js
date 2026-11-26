@@ -29,8 +29,9 @@ let app = null;
 let appExited = null; // promise resolved with the exit code
 let appOutput = '';
 
+// KOLONKA_NO_UPDATE: the packaged app must not ask GitHub for updates in a test (checked at the end)
 function env() {
-  const e = Object.assign({}, process.env, { KOLONKA_DATA: DATA });
+  const e = Object.assign({}, process.env, { KOLONKA_DATA: DATA, KOLONKA_NO_UPDATE: '1' });
   delete e.ELECTRON_RUN_AS_NODE;
   delete e.KOLONKA_SESSION;
   return e;
@@ -138,6 +139,9 @@ async function main() {
   log('Kolonka exited with', code);
   if (code !== 0) throw new Error(`Kolonka exited with code ${code}`);
   if (fs.existsSync(CONTROL)) throw new Error('control.json is still there after quit');
+  const mainLog = fs.readFileSync(path.join(DATA, 'logs', 'main.log'), 'utf8');
+  if (!/updates: off \(env\)/.test(mainLog) || /update check|updater: Checking/.test(mainLog)) throw new Error('the updater was not off under KOLONKA_NO_UPDATE');
+  log('updater: off, no update check');
 }
 
 // kolonka.cmd without node on PATH runs the CLI through the real Kolonka.exe: it must work and must not
@@ -177,6 +181,8 @@ const REQUIRED = [
   'node_modules/@xterm/xterm/lib/xterm.js',
   'node_modules/@xterm/xterm/css/xterm.css',
   'node_modules/@xterm/headless/lib-headless/xterm-headless.js',
+  'node_modules/electron-updater/out/main.js',
+  'node_modules/js-yaml/index.js',
   'src/main/main.js',
 ];
 const FORBIDDEN = [

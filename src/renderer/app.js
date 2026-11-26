@@ -1,5 +1,5 @@
 'use strict';
-/* global Terminal, FitAddon, WebglAddon, SearchAddon, WebLinksAddon, Unicode11Addon, ICONS, I18N, Dictation, UiLogic */
+/* global Terminal, FitAddon, WebglAddon, SearchAddon, WebLinksAddon, Unicode11Addon, ICONS, I18N, Dictation, UiLogic, UpdateBar */
 
 const api = window.kolonka;
 const $ = (s, r = document) => r.querySelector(s);
@@ -50,6 +50,7 @@ let dragInfo = null;
   api.onWindowAction((a) => { if (a === 'toggle-sidebar') toggleSidebar(); });
 
   Dictation.init(S.dictation, { toast: (title, text) => showToast({ title, text }), t });
+  UpdateBar.init(S.update, { api, t, version: S.version, toast: (title, text) => showToast({ title, text }) });
   if (S.settingsError) showToast({ title: t('settings.errorTitle'), text: S.settingsError, sticky: true });
   window.addEventListener('error', (e) => api.log('error', `renderer: ${e.message} @ ${e.filename}:${e.lineno}`, e.error && e.error.stack));
   window.addEventListener('unhandledrejection', (e) => api.log('error', 'renderer unhandled rejection: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
@@ -632,6 +633,8 @@ function paletteSource() {
   items.push({ group: G, icon: ICONS.bolt, label: t('pal.hooksRemove'), run: () => installHooks(true) });
   if (S.api) items.push({ group: G, icon: ICONS.api, label: t('pal.copyApi'), hint: S.api.url, run: () => api.cmd('clipboard.write', { text: S.api.url }) });
   items.push({ group: G, icon: ICONS.bug, label: t('pal.report'), run: () => api.cmd('report') });
+  if (UpdateBar.ready()) items.push({ group: G, icon: ICONS.update, label: t('update.restart'), run: UpdateBar.restart });
+  items.push({ group: G, icon: ICONS.update, label: t('update.check'), run: UpdateBar.check });
   return items;
 }
 function renderPalette() {
@@ -755,6 +758,8 @@ async function settingsMenu(at) {
     { icon: ICONS.collapse, label: t('menu.hideSidebar'), hint: 'Ctrl+Shift+B', run: toggleSidebar },
     { icon: ICONS.bug, label: t('pal.report'), run: () => api.cmd('report') },
     '-',
+    ...(UpdateBar.ready() ? [{ icon: ICONS.update, label: t('update.restart'), run: UpdateBar.restart }] : []),
+    { icon: ICONS.update, label: t('update.check'), run: UpdateBar.check },
     { icon: ICONS.bolt, label: `Kolonka ${S.version}`, run: () => {} },
   ], at);
 }

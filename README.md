@@ -52,6 +52,8 @@ So I built the terminal I wanted on Windows. Kolonka keeps every shell in a **si
 1. Download **`Kolonka-Setup-<version>.exe`** from the [latest release](https://github.com/huopolinen/kolonka/releases/latest).
 2. Run it. It installs per user (no admin rights) into `%LOCALAPPDATA%\Programs\Kolonka` and adds Start menu and desktop shortcuts.
 
+Kolonka 0.2.0 and later update themselves; 0.1.0 must be updated once manually (download and run the new installer over it, your tabs and settings stay).
+
 > The installer is not code-signed yet, so Windows SmartScreen may say *"Windows protected your PC"*. Click **More info → Run anyway**. If you prefer, build it yourself from source (below).
 
 Requirements: Windows 10 1903+ or Windows 11, x64. [Git for Windows](https://git-scm.com/download/win) is recommended (Git Bash becomes the default shell).
@@ -67,6 +69,12 @@ Get-FileHash .\Kolonka-Setup-<version>.exe -Algorithm SHA256
 # with the GitHub CLI: proves the file was built by this repository's release workflow
 gh attestation verify .\Kolonka-Setup-<version>.exe -R huopolinen/kolonka
 ```
+
+### Updates
+
+Kolonka checks the [latest release](https://github.com/huopolinen/kolonka/releases/latest) of this repository 30 seconds after it starts and then every 6 hours. Only published, stable releases count: drafts and prereleases are never offered. By default a new version is downloaded in the background and installed the next time you quit Kolonka; a bar at the bottom of the sidebar says when it is ready, and **Restart to update** installs it right away (if some tabs are still working or waiting for you, Kolonka asks first). Your tabs, workspaces, Claude Code hooks and voice files stay; the programs running in the tabs are stopped, as on any restart. ⚙ → **Check for updates** (also in the command palette) checks now.
+
+The download is checked against the SHA-512 hash in the release's `latest.yml` before anything is installed; a file that does not match is discarded. The installer is not code-signed yet, so there is no signature check on top of that. `"updates": "notify"` in settings.json only shows the new version and downloads it when you click **Download**; `"updates": "off"` turns the checks off (so does the environment variable `KOLONKA_NO_UPDATE=1`). A failed check, for example without a network, only goes to `logs\main.log`; a failed download is shown. A second instance with its own `KOLONKA_DATA` folder does not check: the main one updates the installation.
 
 ## Keyboard
 
@@ -267,6 +275,7 @@ printf '\033Ptmux;\033\033]7711;status;state=blocked\007\033\\' > /dev/tty
   "fontSize": 14,
   "apiPort": 47811,                       // falls back to a random port if busy
   "notifications": true,
+  "updates": "auto",                      // auto (download in the background, install on quit) | notify | off
   "backgroundMaterial": "mica",           // mica | acrylic | tabbed | none
   "restore": "fresh",                     // fresh | rerun: re-run the command of every tab at startup
   "remote": {                             // remote control over ssh
@@ -318,13 +327,13 @@ npm run pack         # build dist/win-unpacked
 npm run smoke        # start the packaged app, drive it through the CLI and quit it (Windows)
 ```
 
-CI runs all three on every pull request.
+CI runs all three on every pull request, and also installs the built installer, has it update itself from a local feed to a build with the next version (once on quit, once with *Restart to update*) and checks that the hooks, the voice files and the tabs survive (`test/smoke/updater.js`).
 
 Stack: [Electron](https://www.electronjs.org/), [xterm.js](https://xtermjs.org/) (WebGL renderer, headless mirror for the API), [node-pty](https://github.com/microsoft/node-pty) on ConPTY, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) for voice input.
 
 ## Roadmap
 
-Split panes and overlays · themes · Windows' built-in speech engine as a dictation option · auto-update · code signing.
+Split panes and overlays · themes · Windows' built-in speech engine as a dictation option · code signing.
 
 ## Acknowledgements
 
