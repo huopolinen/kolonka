@@ -63,3 +63,10 @@ jobs:
 
       - name: Smoke test of the packaged app
         run: node test/smoke/packaged.js
+
+      # the NSIS installer from the same build; the round trip covers the uninstaller's hook cleanup
+      - name: Build the installer
+        run: npx electron-builder --win nsis --prepackaged dist/win-unpacked --publish never
+
+      - name: Install / uninstall round trip
+        run: node test/smoke/installer.js

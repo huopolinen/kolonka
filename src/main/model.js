@@ -6,6 +6,7 @@ const { EventEmitter } = require('events');
 const { stripAnsi } = require('./ansi');
 const { ApiError } = require('./errors');
 const { homeDir } = require('./shells');
+const { dirOk } = require('./paths');
 
 const STATUSES = ['idle', 'active', 'blocked', 'done'];
 
@@ -414,6 +415,5 @@ class Model extends EventEmitter {
 }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-function dirOk(p) { try { return !!p && fs.statSync(p).isDirectory(); } catch { return false; } }
 
 module.exports = { Model, ApiError, STATUSES };

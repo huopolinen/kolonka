@@ -11,7 +11,9 @@ const MAX_LOG = 1024 * 1024;
 const ISSUE_URL_LIMIT = 7600; // GitHub rejects very long /issues/new URLs
 
 class Crash {
-  constructor({ dataDir, pkg, t, getWin, info }) {
+  // secrets: () => [strings] that must never reach a report (API token, API keys).
+  // beforeExit: called before a fatal error ends the process with app.exit, which skips before-quit.
+  constructor({ dataDir, pkg, t, getWin, info, secrets, beforeExit }) {
     this.dir = path.join(dataDir, 'logs');
     this.file = path.join(this.dir, 'main.log');
     this.marker = path.join(dataDir, 'running.json');
@@ -19,6 +21,8 @@ class Crash {
     this.t = t;
     this.getWin = getWin;
     this.info = info || (() => ({}));
+    this.secrets = secrets || (() => []);
+    this.beforeExit = beforeExit || (() => {});
     this.lastDialog = 0;
     this.prev = null;
     fs.mkdirSync(this.dir, { recursive: true });
@@ -109,7 +113,10 @@ class Crash {
       defaultId: 0, cancelId: 1, noLink: true,
     });
     if (r === 0) this.report({ title: 'Error: ' + ((err && err.message) || text.split('\n')[0]).slice(0, 120), error: text });
-    if (r === 2) app.exit(1);
+    if (r === 2) {
+      try { this.beforeExit(); } catch (e) { this.log('error', 'beforeExit: ' + fmt(e)); }
+      app.exit(1);
+    }
   }
 
   async rendererGone(wc, details) {
@@ -138,7 +145,9 @@ class Crash {
 
   redact(s) {
     const user = (() => { try { return os.userInfo().username; } catch { return ''; } })();
-    return redact(s, { home: os.homedir(), user, host: os.hostname() });
+    let secrets = [];
+    try { secrets = (this.secrets() || []).filter(Boolean); } catch { /* report without them */ }
+    return redact(s, { home: os.homedir(), user, host: os.hostname(), secrets });
   }
 
   // Open a pre-filled GitHub issue. The user sees it before anything is sent.

@@ -80,7 +80,7 @@ Middle-click a row to close it; right-click a row or a workspace for its menu; d
 
 Hold <kbd>Space</kbd> in a terminal for ~0.3 s. A *Listening* pill appears; speak and release. The transcript is inserted as a paste (bracketed paste when the program supports it) — Enter is not pressed unless you enable `autoEnter`. Tapping Space types a space as usual, and pressing another key while Space is down just types normally.
 
-On first use Kolonka offers to download whisper.cpp and the `large-v3-turbo` model into `%LOCALAPPDATA%\Kolonka\whisper` — about 1.3 GB with an NVIDIA GPU (CUDA), 0.6 GB CPU-only. After that it works offline. The model is unloaded after 10 idle minutes. On an RTX 4060 a sentence takes about 0.3 s.
+On first use Kolonka offers to download whisper.cpp and the `large-v3-turbo` model into `%LOCALAPPDATA%\Kolonka\whisper` — about 1.3 GB with an NVIDIA GPU (CUDA), 0.6 GB CPU-only. Every file is pinned to a fixed whisper.cpp release and model revision and checked against its SHA-256 before use. After that it works offline. The local speech server listens on 127.0.0.1 under a random path known only to Kolonka. The model is unloaded after 10 idle minutes. On an RTX 4060 a sentence takes about 0.3 s.
 
 Prefer the cloud? Set `"engine": "openai"` or `"groq"` and an `apiKey` (see [Configuration](#configuration)).
 
@@ -131,7 +131,7 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:47811/api/tree
 
 ### Claude Code status hooks
 
-⚙ → **Claude Code hooks: install** (or `kolonka hooks install`) adds four hooks to `~/.claude/settings.json`, keeping a backup next to it:
+⚙ → **Claude Code hooks: install** (or `kolonka hooks install`) adds four hooks to `~/.claude/settings.json`, keeping a backup of the original next to it (`settings.json.kolonka-backup`, written once):
 
 | Hook | Status |
 |---|---|
@@ -139,7 +139,7 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:47811/api/tree
 | `Notification` (permission prompt, idle) | needs you |
 | `Stop` | done |
 
-Outside Kolonka the hook exits silently. `kolonka hooks uninstall` removes exactly these entries.
+The hooks call Kolonka's launcher, so they work without Node.js in `PATH`. Outside Kolonka, or once Kolonka is removed, they exit silently. `kolonka hooks uninstall` removes exactly these entries (including the `node "…kolonka.js"` form older versions wrote), and so does uninstalling Kolonka from Windows settings; the uninstaller also offers to delete the downloaded voice files.
 
 ## Configuration
 
@@ -173,7 +173,7 @@ Outside Kolonka the hook exits silently. `kolonka hooks uninstall` removes exact
 }
 ```
 
-State, window position, logs and `control.json` live in the same folder. `KOLONKA_DATA` overrides it — handy for a second, isolated instance.
+State, window position, logs and `control.json` live in the same folder. `KOLONKA_DATA` overrides it — handy for a second, isolated instance. If that folder is outside your user profile, Kolonka limits `control.json` (it holds the API token) to your account.
 
 ## Crash reports and privacy
 

@@ -31,3 +31,50 @@ test('empty input gives an empty string', () => {
   assert.equal(redact(undefined, ME), '');
   assert.equal(redact(null, ME), '');
 });
+
+test('Bearer tokens are redacted, with any whitespace', () => {
+  assert.equal(redact('authorization: Bearer abc.def-ghi_jkl', {}), 'authorization: Bearer <redacted>');
+  assert.equal(redact('Authorization: Bearer   Zm9vYmFyYmF6cXV4+/=', {}), 'Authorization: Bearer   <redacted>');
+});
+
+test('well-known API key formats are redacted', () => {
+  const keys = [
+    'sk-0123456789abcdefABCDEF',
+    'sk-proj-AbCdEf0123456789_xyz-QRS',
+    'sk-ant-api03-AbCdEf0123456789xyz_QRS-tuv',
+    'gsk_0123456789abcdefABCDEF0123',
+    'ghp_0123456789abcdefABCDEF0123456789abcd',
+    'gho_0123456789abcdefABCDEF',
+    'ghu_0123456789abcdefABCDEF',
+    'ghs_0123456789abcdefABCDEF',
+    'ghr_0123456789abcdefABCDEF',
+    'github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz',
+    'xoxb-1234567890-abcdefghij',
+    'xoxp-1234567890-abcdefghij',
+    'xoxa-1234567890-abcdefghij',
+  ];
+  for (const k of keys) assert.equal(redact(`key=${k} end`, {}), 'key=<redacted> end', k);
+});
+
+test('a login is replaced only as a whole word', () => {
+  const me = { home: 'C:\\Users\\dev', user: 'dev', host: 'box' };
+  assert.equal(redact('device dev developer /dev/null', me), 'device <user> developer /<user>/null');
+  assert.equal(redact('DEV logged in', me), '<user> logged in');
+});
+
+test('a host name is replaced only as a whole word', () => {
+  assert.equal(redact('on build7 not rebuild7s', { host: 'build7' }), 'on <host> not rebuild7s');
+});
+
+test('non-Latin user names are replaced as whole words', () => {
+  assert.equal(redact('Иван и Иванов', { user: 'Иван' }), '<user> и Иванов');
+});
+
+test('known secrets are removed literally, whatever their format', () => {
+  const secrets = ['Xy7-not-a-known-format-42', 'q9W2e8R7t6Y5u4I3'];
+  assert.equal(redact('k=Xy7-not-a-known-format-42 and "q9W2e8R7t6Y5u4I3"', { secrets }), 'k=<redacted> and "<redacted>"');
+});
+
+test('short or empty known secrets are ignored', () => {
+  assert.equal(redact('a b c', { secrets: ['', 'a', null, undefined] }), 'a b c');
+});
