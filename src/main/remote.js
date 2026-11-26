@@ -6,7 +6,7 @@
 //
 // Terminal output is untrusted: `cat` of a file or any program on the server can print these
 // sequences. So values are base64 (no escaping games), a request is trusted only with the tab's own
-// token (LC_KOLONKA_TOKEN, which only processes of that ssh session have), hosts are checked against
+// token (KOLONKA_TOKEN, which only processes of that ssh session have), hosts are checked against
 // a strict pattern, a command from the server never becomes ssh options, and ssh is started without
 // a shell, with a command line Kolonka quotes itself.
 const fs = require('fs');
@@ -329,7 +329,7 @@ function normalizeSsh(spec, isAllowedExe = () => false) {
 // destination and the command after `--`, so neither can be read as an option. The command is a
 // single argument: the remote shell interprets it, nothing on this computer does.
 function buildSshArgs({ destination, options, cmd }) {
-  return ['-t', '-o', 'SendEnv=LC_TERMINAL', '-o', 'SendEnv=LC_TERMINAL_VERSION', '-o', 'SendEnv=LC_KOLONKA_TOKEN',
+  return ['-t', '-o', 'SendEnv=LC_TERMINAL', '-o', 'SendEnv=LC_TERMINAL_VERSION', '-o', 'SendEnv=KOLONKA_TOKEN',
     ...(options || []), '--', destination, ...(cmd ? [cmd] : [])];
 }
 

@@ -187,16 +187,16 @@ kolonka rename "build box"
 ### Setting it up
 
 1. **Install the script on the server**: `kolonka remote install myserver` (from a Kolonka tab on Windows) copies [`bin/kolonka-remote`](bin/kolonka-remote) to `~/.local/bin/kolonka` over ssh, asking before it overwrites a file there. It is a POSIX `sh` script that needs only `printf`, `sed` and `base64`; you can also copy it by hand.
-2. **Send Kolonka's variables over ssh.** Every Kolonka tab has `LC_TERMINAL=Kolonka`, `LC_TERMINAL_VERSION=<version>` and `LC_KOLONKA_TOKEN=<a random secret of this tab>` in its environment. The script does nothing (exit code 3) when `LC_TERMINAL` is not `Kolonka`, so it never prints junk into other terminals, and it sends the token along with every request (see [who may open tabs](#who-may-open-tabs)). The OpenSSH client of Windows does not send `LC_*` variables on its own; add to `%USERPROFILE%\.ssh\config`:
+2. **Send Kolonka's variables over ssh — to that server only.** Every Kolonka tab has `LC_TERMINAL=Kolonka`, `LC_TERMINAL_VERSION=<version>` and `KOLONKA_TOKEN=<a random secret of this tab>` in its environment. The script does nothing (exit code 3) when `LC_TERMINAL` is not `Kolonka`, so it never prints junk into other terminals, and it sends the token along with every request (see [who may open tabs](#who-may-open-tabs)). The OpenSSH client of Windows sends none of them on its own; add a block **for each server you want this on** to `%USERPROFILE%\.ssh\config` — not `Host *`, which would hand the token to every server you connect to, git hosts included:
    ```
-   Host *
-     SendEnv LC_TERMINAL LC_TERMINAL_VERSION LC_KOLONKA_TOKEN
+   Host myserver
+     SendEnv LC_TERMINAL LC_TERMINAL_VERSION KOLONKA_TOKEN
    ```
-   The server's sshd must accept them: Debian and Ubuntu do by default (`AcceptEnv LANG LC_*` in `/etc/ssh/sshd_config`); elsewhere add `AcceptEnv LC_TERMINAL LC_TERMINAL_VERSION LC_KOLONKA_TOKEN`. Tabs Kolonka opens itself always send them (`-o SendEnv=…`).
+   The server's sshd must accept them: add `AcceptEnv KOLONKA_TOKEN` to `/etc/ssh/sshd_config` (Debian and Ubuntu accept `LC_*` already; elsewhere add `LC_TERMINAL LC_TERMINAL_VERSION` too). The token has no `LC_` prefix on purpose: many servers forward `LC_*` to the next hop by default (`SendEnv LANG LC_*` in Debian's ssh_config), and the token must not travel further. Tabs Kolonka opens itself always send the three variables (`-o SendEnv=…`).
 3. **tmux** (3.3 or newer) drops escape sequences it does not know unless passthrough is on. In `~/.tmux.conf` on the server:
    ```
    set -g allow-passthrough on
-   set -ga update-environment " LC_KOLONKA_TOKEN LC_TERMINAL LC_TERMINAL_VERSION"
+   set -ga update-environment " KOLONKA_TOKEN LC_TERMINAL LC_TERMINAL_VERSION"
    ```
    The script wraps its sequences for tmux by itself when `$TMUX` is set, and takes `LC_TERMINAL` and the token of the client attached last (`tmux show-environment`), so a tmux session started from another terminal works once you attach to it from Kolonka. If two Kolonka tabs are attached to one tmux session, requests carry the token of the one attached last; the other tab asks. GNU screen is not supported.
 
@@ -204,7 +204,7 @@ kolonka rename "build box"
 
 `kolonka open` asks for a tab connected to **the same server** (`--same`, the default) or to another host (`--host H`, a name from your `~/.ssh/config`, `user@host` or an address). One argument after `--` is a shell command line (`kolonka open -- 'tail -f app.log | grep ERROR'`); several are a command and its arguments, each quoted for the remote shell. With no command you get a login shell. `--name`, `--ws` (a workspace by name, created if needed) and `--no-select` work as for `kolonka new`; `--no-rerun` asks Kolonka not to reconnect the tab when it starts.
 
-Kolonka builds the command itself — `ssh.exe -t -o SendEnv=LC_TERMINAL -o SendEnv=LC_TERMINAL_VERSION -o SendEnv=LC_KOLONKA_TOKEN [options] -- <host> <command>` — and starts ssh.exe directly, without a shell, with every argument in double quotes, quoted for the parser of that ssh.exe (the C runtime for the OpenSSH client of Windows, the msys runtime for the one of Git for Windows, which would otherwise expand `@file`, `~`, `*` and `{a,b}` in unquoted arguments). The command is one argument that only the shell on the server interprets.
+Kolonka builds the command itself — `ssh.exe -t -o SendEnv=LC_TERMINAL -o SendEnv=LC_TERMINAL_VERSION -o SendEnv=KOLONKA_TOKEN [options] -- <host> <command>` — and starts ssh.exe directly, without a shell, with every argument in double quotes, quoted for the parser of that ssh.exe (the C runtime for the OpenSSH client of Windows, the msys runtime for the one of Git for Windows, which would otherwise expand `@file`, `~`, `*` and `{a,b}` in unquoted arguments; `MSYS` and `CYGWIN` are removed from its environment, so `MSYS=noglob` cannot change how it reads the quotes). Without an ssh.exe Kolonka may start, the tab is not started at all (no search on `PATH`). The command is one argument that only the shell on the server interprets.
 
 "The same server" is found this way: for a tab Kolonka opened over ssh, it is the connection Kolonka made. For a tab where you typed `ssh …` yourself (in Git Bash, PowerShell or cmd), Kolonka looks for the `ssh.exe` running under the tab's shell (through the Windows process list) and takes its destination and these options: `-p -l -i -J -4 -6`; `-v -t -T -q -C -A` are left out (a new tab never gets your agent). A connection that needs anything else (`-o`, `-F`, forwardings…) is **refused** rather than made without it — "can't reproduce this ssh connection": put such settings into `~/.ssh/config` for that host. If the tab is in a nested ssh (ssh from the server to another one), "same" still means the server the tab connected to.
 
@@ -215,15 +215,15 @@ ssh.exe is the one the asking tab runs, if it is the OpenSSH client of Windows (
 Terminal output is not trusted: any program on the server — or `cat` of a file, `tail -f` of a log with escape sequences in it, `git log` of someone's repository, the `remote:` lines of a git server — can print these sequences. So:
 
 - **Only ssh tabs may ask.** A request from a tab that is not an ssh session right now (no ssh.exe under it, not opened by Kolonka over ssh) is refused, so `cat` of a downloaded file in a local shell cannot open anything. (`"fromLocalTabs": true` lets local tabs ask for a named host — with the same checks below.)
-- **Without the tab's token, you are asked — every time.** Kolonka gives each run of each tab a new random `LC_KOLONKA_TOKEN` and accepts a request as coming *from your session* only if it carries that token (compared in constant time). Text a program merely displays does not know it. Only such a request to a host in `remote.allowHosts` (or allowed with *Always for this host*) opens without a question. Any other request shows the dialog: *The tab "build" (s3), connected to myserver, wants to open a tab there running: …* — **Allow once**, **Always for this host** (only with a valid token; remembered in `state.json`; `kolonka remote hosts` lists them, `kolonka remote forget HOST` drops one), **Deny** (no more requests from that tab for 10 minutes) or **Deny for this tab**. Requests that waited behind the dialog are asked about one by one, also after an *Always*.
+- **Without the tab's token, you are asked — every time.** Kolonka gives each run of each tab a new random `KOLONKA_TOKEN` and accepts a request as coming *from your session* only if it carries that token (compared in constant time). Text a program merely displays does not know it. The token vouches only for the server the tab is connected to, so only a request with it **for that same server** (`@same`, or the same `user@host:port` named) that is in `remote.allowHosts` (or allowed with *Always for this host*) opens without a question; a request for any other host always shows the dialog. Any other request shows the dialog: *The tab "build" (s3), connected to myserver, wants to open a tab there running: …* — **Allow once**, **Always for this host** (only with a valid token; remembered in `state.json`; `kolonka remote hosts` lists them, `kolonka remote forget HOST` drops one), **Deny** (no more requests from that tab for 10 minutes) or **Deny for this tab**. Requests that waited behind the dialog are asked about one by one, also after an *Always*.
 - **Hosts are compared as a whole**: `user@host:port`, with the user and port from `-l` / `-p` too. `"prod"` in `allowHosts` allows `ssh prod`, not `ssh root@prod` or `ssh -p 2222 prod`. For `--host` the question is about the other host, which matters: connecting to a host offers it your keys (and your agent, if you forward it).
 - **What you see is what runs.** A command longer than 512 characters, on several lines, or with control or invisible characters (bidi marks, zero-width and tag characters, separators, fillers) is refused rather than shown cleaned up; runs of spaces are collapsed in the dialog. A tab name the server set is not used to describe the tab in the dialog. Names and notification texts are cut to 80 / 300 characters with such characters removed.
 - **No ssh options from the server.** The server names a host (checked against `^[A-Za-z0-9._@:-]+$`, never starting with `-` or `@`) and a command, never ssh options or an ssh command line, so it cannot use `ProxyCommand`, `LocalCommand` or `-F` to run something on your computer.
-- **Reconnecting at startup is for trusted tabs.** A tab opened by a request with the token to an allowed host reconnects when Kolonka starts (unless the server sent `rerun=0`); a tab you allowed once shows *not connected — Enter: connect*. The saved path of its ssh.exe is checked against the list above again.
-- **Limits.** 10 open requests, 10 notifications and 10 status changes a minute per tab (tabs opened by a server count towards the tab that opened them), 20 open requests a minute in all, at most `remote.maxTabs` (30) running tabs opened by servers; the rest are dropped and noted in `logs\main.log`.
+- **Reconnecting at startup is for trusted tabs.** A tab opened without a question (or with *Always*) reconnects when Kolonka starts, unless the server sent `rerun=0`; a tab you allowed once shows *not connected — Enter: connect*. `"restore": "rerun"` overrides this and reconnects every ssh tab, the ones allowed once included. The saved path of its ssh.exe is checked against the list above again.
+- **Limits.** 10 open requests, 10 notifications and 10 status changes a minute per tab (tabs opened by a server count towards the tab that opened them, also after a restart of Kolonka), 20 open requests a minute in all, at most `remote.maxTabs` (30) running tabs opened by servers; the rest are dropped and noted in `logs\main.log`.
 - **Off switch.** `"remote": { "enabled": false }` ignores all of it.
 
-What the token does **not** protect against: anything that runs as you (or as root) on the server can read the token from the environment of your session and use it, and so can a host you forward it to with `SendEnv` in a nested ssh. It protects against text — logs, files, output of programs that do not have your session's environment — not against a compromised account. For hosts you do not fully trust, leave them out of `allowHosts`: every request then shows the dialog.
+What the token does **not** protect against: anything that runs as you (or as root) on the server can read the token from the environment of your session and use it — to open tabs on that same server without a question (it can run commands there anyway), never on another host. If you forward the token further yourself — `SendEnv KOLONKA_TOKEN` (or `SendEnv *`) in the server's ssh config, then `ssh other` from the tab — `other` gets it too; requests from there still name the first server as "same", so they can open tabs there without a question. Don't forward it. The token protects against text — logs, files, output of programs that do not have your session's environment — not against a compromised account. For hosts you do not fully trust, leave them out of `allowHosts`: every request then shows the dialog.
 
 Status and rename requests need no permission: they only change how the tab looks.
 
@@ -239,7 +239,7 @@ The script writes to `/dev/tty`, which a hook has as long as Claude Code itself 
 
 ### The escape sequences
 
-For script authors: `ESC ] 7711 ; <action> ; key=value ; … BEL` (or `ESC \` instead of `BEL`). Values are standard base64 of UTF-8 (padding optional) except `select`, `rerun` and `state`; unknown keys are ignored. Every action takes `token=` (base64 of `$LC_KOLONKA_TOKEN`); without it `open` always asks.
+For script authors: `ESC ] 7711 ; <action> ; key=value ; … BEL` (or `ESC \` instead of `BEL`). Values are standard base64 of UTF-8 (padding optional) except `select`, `rerun` and `state`; unknown keys are ignored. Every action takes `token=` (base64 of `$KOLONKA_TOKEN`); without it `open` always asks.
 
 | Action | Fields |
 |---|---|
@@ -250,7 +250,7 @@ For script authors: `ESC ] 7711 ; <action> ; key=value ; … BEL` (or `ESC \` in
 
 ```sh
 b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
-printf '\033]7711;open;host=%s;cmd=%s;name=%s;token=%s\007' "$(b64 @same)" "$(b64 'htop')" "$(b64 top)" "$(b64 "$LC_KOLONKA_TOKEN")" > /dev/tty
+printf '\033]7711;open;host=%s;cmd=%s;name=%s;token=%s\007' "$(b64 @same)" "$(b64 'htop')" "$(b64 top)" "$(b64 "$KOLONKA_TOKEN")" > /dev/tty
 # inside tmux, wrapped:
 printf '\033Ptmux;\033\033]7711;status;state=blocked\007\033\\' > /dev/tty
 ```

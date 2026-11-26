@@ -32,13 +32,13 @@ b64() { printf '%s' "$1" | base64 | tr -d '\r\n'; }
 # One word for the remote shell: in single quotes, with ' written as '\''.
 shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-# The token of the Kolonka tab (LC_KOLONKA_TOKEN, sent with ssh's SendEnv). Under tmux the variable of
+# The token of the Kolonka tab (KOLONKA_TOKEN, sent with ssh's SendEnv). Under tmux the variable of
 # the pane can belong to an earlier client, so the one of the current client is asked first.
 token() {
   if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
-    case "$(tmux show-environment LC_KOLONKA_TOKEN 2>/dev/null)" in LC_KOLONKA_TOKEN=?*) tmux show-environment LC_KOLONKA_TOKEN | sed 's/^LC_KOLONKA_TOKEN=//'; return ;; esac
+    case "$(tmux show-environment KOLONKA_TOKEN 2>/dev/null)" in KOLONKA_TOKEN=?*) tmux show-environment KOLONKA_TOKEN | sed 's/^KOLONKA_TOKEN=//'; return ;; esac
   fi
-  printf '%s' "${LC_KOLONKA_TOKEN:-}"
+  printf '%s' "${KOLONKA_TOKEN:-}"
 }
 
 # Kolonka sets LC_TERMINAL in every tab; ssh passes it with SendEnv / AcceptEnv. Inside tmux the

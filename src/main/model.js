@@ -96,6 +96,7 @@ class Model extends EventEmitter {
             command, runCommand: !!command && (rerun || rerunAll), ssh, rerun,
             deferred: !!ssh && !(rerun || rerunAll),
             fromRemote: s.fromRemote === true, nameFromServer: s.nameFromServer === true,
+            remoteRoot: typeof s.remoteRoot === 'string' && /^s\d+$/.test(s.remoteRoot) ? s.remoteRoot : null,
           });
         }
       }
@@ -169,6 +170,7 @@ class Model extends EventEmitter {
             s.ssh ? { ssh: Object.assign({ destination: s.ssh.destination, options: s.ssh.options, cmd: s.ssh.cmd }, s.ssh.exe ? { exe: s.ssh.exe } : {}) } : {},
             s.rerun ? { rerun: true } : {},
             s.fromRemote ? { fromRemote: true } : {},
+            s.remoteRoot ? { remoteRoot: s.remoteRoot } : {},
             s.nameFromServer ? { nameFromServer: true } : {})),
       })),
     };
@@ -315,9 +317,13 @@ class Model extends EventEmitter {
     let key; let shell;
     if (ssh) {
       key = 'ssh';
-      const file = (ssh.exe && this._isAllowedSshExe(ssh.exe) && ssh.exe) || this._findSshExe() || 'ssh.exe';
+      // no ssh.exe Kolonka may start: the tab is not started (no search on PATH); Enter tries again
+      const file = (ssh.exe && this._isAllowedSshExe(ssh.exe) && ssh.exe) || this._findSshExe() || null;
       const argv = remote.buildSshArgs(ssh);
-      shell = { label: 'SSH', file, args: argv, commandLine: remote.sshCommandLine(file, argv), env: {} };
+      shell = { label: 'SSH', file, args: argv, commandLine: file ? remote.sshCommandLine(file, argv) : '', env: {} };
+      // MSYS=noglob (or CYGWIN) would make Git's ssh.exe read the quotes differently: never inherited
+      if (file && remote.isMsysSsh(file)) shell.unsetEnv = ['MSYS', 'CYGWIN'];
+      if (!file) deferred = true;
       command = undefined;
     } else {
       key = this.shells[shellKey] ? shellKey : this.defaultShellKey();
@@ -337,6 +343,10 @@ class Model extends EventEmitter {
     this._wire(s);
     try {
       s.start();
+      if (ssh && !shell.file) {
+        s.term && s.term.write('\r\n\x1b[31mssh.exe not found: install the OpenSSH client of Windows or set remote.ssh in settings.json\x1b[0m\r\n');
+        this._log('warn', `${id}: no ssh.exe to start (remote.ssh, Windows OpenSSH, Git for Windows)`);
+      }
     } catch (e) {
       s.exited = true; s.exitCode = -1;
       s.term && s.term.write(`\r\n\x1b[31mFailed to start ${shell.file}: ${e.message}\x1b[0m\r\n`);
@@ -633,9 +643,12 @@ class Model extends EventEmitter {
     if (!(target.exe && this._isAllowedSshExe(target.exe)) && !this._findSshExe()) return this._remoteDenied(s, 'no-ssh-exe', { host: target.destination });
 
     const key = remote.destKey(target);
-    // the tab's own token: the request comes from a process of this ssh session, not from text it shows
+    // the tab's own token: the request comes from a process of this ssh session, not from text it shows.
+    // That only vouches for the server the tab is connected to (the token travels with the session, and
+    // a server can forward it further): without a question only to that same host, and only if allowed.
     const verified = remote.tokenEquals(msg.token, s.token);
-    let trusted = verified && this.remoteHostAllowed(key);
+    const sameHost = !!origin && key.toLowerCase() === remote.destKey(origin).toLowerCase();
+    let trusted = verified && sameHost && this.remoteHostAllowed(key);
     if (!trusted) {
       const answer = await this._askQueued({
         session: s.id, name: s.nameFromServer ? null : s.name, from: origin ? remote.destKey(origin) : null,

@@ -42,7 +42,7 @@ function run(t, args, { env = {}, tty = true } = {}) {
   const ttyFile = path.join(dir, 'tty');
   if (tty) fs.writeFileSync(ttyFile, '');
   const e = Object.assign({}, process.env);
-  for (const k of ['TMUX', 'LC_TERMINAL', 'LC_TERMINAL_VERSION', 'LC_KOLONKA_TOKEN', 'KOLONKA_TTY']) delete e[k];
+  for (const k of ['TMUX', 'LC_TERMINAL', 'LC_TERMINAL_VERSION', 'KOLONKA_TOKEN', 'KOLONKA_TTY']) delete e[k];
   Object.assign(e, { KOLONKA_TTY: tty ? fwd(ttyFile) : fwd(path.join(dir, 'no', 'such', 'tty')) }, env);
   const r = spawnSync(SH, [fwd(SCRIPT), ...args], { env: e, encoding: 'latin1', timeout: 20000 });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, tty: tty ? fs.readFileSync(ttyFile, 'latin1') : '' };
@@ -71,18 +71,18 @@ test('open: one word is a shell command line, passed as it is', { skip }, (t) =>
 });
 
 test('the tab token goes along: from the environment, or under tmux from the current client', { skip }, (t) => {
-  const plain = run(t, ['open', '--no-rerun', '--', 'htop'], { env: Object.assign({ LC_KOLONKA_TOKEN: 'tok-123' }, K) });
+  const plain = run(t, ['open', '--no-rerun', '--', 'htop'], { env: Object.assign({ KOLONKA_TOKEN: 'tok-123' }, K) });
   const m = osc(plain.tty);
   assert.equal(m.token, 'tok-123');
   assert.equal(m.rerun, false);
-  assert.equal(osc(run(t, ['status', 'done'], { env: Object.assign({ LC_KOLONKA_TOKEN: 'tok-9' }, K) }).tty).token, 'tok-9');
+  assert.equal(osc(run(t, ['status', 'done'], { env: Object.assign({ KOLONKA_TOKEN: 'tok-9' }, K) }).tty).token, 'tok-9');
   assert.equal(osc(run(t, ['status', 'done'], { env: K }).tty).token, undefined, 'no token: none sent');
   // a fake tmux that knows the token of the attached client
   const bin = tmp(t);
-  fs.writeFileSync(path.join(bin, 'tmux'), '#!/bin/sh\n[ "$1 $2" = "show-environment LC_KOLONKA_TOKEN" ] && echo LC_KOLONKA_TOKEN=from-tmux\n');
+  fs.writeFileSync(path.join(bin, 'tmux'), '#!/bin/sh\n[ "$1 $2" = "show-environment KOLONKA_TOKEN" ] && echo KOLONKA_TOKEN=from-tmux\n');
   fs.chmodSync(path.join(bin, 'tmux'), 0o755);
   const sep = process.platform === 'win32' ? ';' : ':';
-  const r = run(t, ['notify', 'x'], { env: Object.assign({ TMUX: '/tmp/t,1,0', LC_KOLONKA_TOKEN: 'stale', PATH: bin + sep + process.env.PATH }, K) });
+  const r = run(t, ['notify', 'x'], { env: Object.assign({ TMUX: '/tmp/t,1,0', KOLONKA_TOKEN: 'stale', PATH: bin + sep + process.env.PATH }, K) });
   const inner = /^\x1bPtmux;\x1b(\x1b\][^\x07]*\x07)\x1b\\$/.exec(r.tty);
   assert.ok(inner, JSON.stringify(r.tty));
   assert.equal(osc(inner[1].replace(/\x1b\x1b/g, '\x1b')).token, 'from-tmux');
@@ -208,7 +208,7 @@ test('remote install: checks, then writes the script with plain ssh, host after 
   assert.deepEqual(run.calls[1].args, ['--', 'myserver', remoteCli.WRITE]);
   assert.equal(run.calls[1].input, fs.readFileSync(SCRIPT, 'utf8').replace(/\r\n/g, '\n'));
   assert.ok(!run.calls[1].input.includes('\r'));
-  assert.match(out.text, /SendEnv LC_TERMINAL LC_TERMINAL_VERSION LC_KOLONKA_TOKEN/);
+  assert.match(out.text, /SendEnv LC_TERMINAL LC_TERMINAL_VERSION KOLONKA_TOKEN/);
   assert.match(out.text, /kolonka hooks print --remote/);
 });
 

@@ -105,10 +105,18 @@ test('every tab has LC_TERMINAL=Kolonka, LC_TERMINAL_VERSION and its own token, 
   const other = make(t, { id: 's2' });
   assert.equal(pty.spawned.opts.env.LC_TERMINAL, 'Kolonka');
   assert.equal(pty.spawned.opts.env.LC_TERMINAL_VERSION, require('../package.json').version);
-  assert.match(pty.spawned.opts.env.LC_KOLONKA_TOKEN, /^[A-Za-z0-9_-]{24}$/);
-  assert.equal(pty.spawned.opts.env.LC_KOLONKA_TOKEN, s.token);
+  assert.match(pty.spawned.opts.env.KOLONKA_TOKEN, /^[A-Za-z0-9_-]{24}$/);
+  assert.equal(pty.spawned.opts.env.KOLONKA_TOKEN, s.token);
   assert.notEqual(other.s.token, s.token);
   assert.ok(!JSON.stringify(s.info()).includes(s.token));
+});
+
+test('a shell can drop variables from the environment it inherits (MSYS / CYGWIN for Git\'s ssh)', { skip }, (t) => {
+  const { pty } = make(t, { shell: { file: 'ssh.exe', env: { MSYS: 'noglob', cygwin: 'x', KEEP: '1' }, unsetEnv: ['MSYS', 'CYGWIN'] } });
+  const keys = Object.keys(pty.spawned.opts.env).map((k) => k.toUpperCase());
+  assert.ok(!keys.includes('MSYS'));
+  assert.ok(!keys.includes('CYGWIN'));
+  assert.equal(pty.spawned.opts.env.KEEP, '1');
 });
 
 test('a deferred tab is not started: no process, shown as exited, its screen can still be read', { skip }, async (t) => {

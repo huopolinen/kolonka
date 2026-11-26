@@ -28,7 +28,8 @@ class Session extends EventEmitter {
     this.nameFromServer = !!opts.nameFromServer;
     this._deferred = !!opts.deferred;    // not started yet: shown as "not connected", Enter starts it
     this.deferred = false;
-    // A secret of this run of the tab, in its environment as LC_KOLONKA_TOKEN: a remote control request
+    // A secret of this run of the tab, in its environment as KOLONKA_TOKEN (not LC_*: servers forward
+    // LC_* further by default, SendEnv LANG LC_*). A remote control request
     // carrying it comes from a process of this tab's session, not from text it merely displays.
     // Never shown in info(), never saved, never logged.
     this.token = newToken();
@@ -91,7 +92,7 @@ class Session extends EventEmitter {
       // what programs on a server see (with SendEnv / AcceptEnv): kolonka-remote checks it
       LC_TERMINAL: 'Kolonka',
       LC_TERMINAL_VERSION: VERSION,
-      LC_KOLONKA_TOKEN: this.token,
+      KOLONKA_TOKEN: this.token,
     });
     if (this._pathPrepend) {
       const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
@@ -99,6 +100,9 @@ class Session extends EventEmitter {
     }
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.ELECTRON_NO_ATTACH_CONSOLE;
+    for (const name of sh.unsetEnv || []) {
+      for (const k of Object.keys(env)) if (k.toUpperCase() === name.toUpperCase()) delete env[k];
+    }
 
     const pty = this._pty || require('node-pty');
     // a shell may bring a ready command line (ssh: quoted by Kolonka for that ssh.exe), which node-pty

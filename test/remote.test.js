@@ -188,7 +188,7 @@ test('hostMatches: the whole key, case-insensitively; "prod" does not cover "roo
 
 test('buildSshArgs: terminal, SendEnv (with the token), options, then -- destination and the command as one argument', () => {
   assert.deepEqual(R.buildSshArgs({ destination: 'leo@myserver', options: ['-p', '2222'], cmd: 'cd ~/x && claude' }),
-    ['-t', '-o', 'SendEnv=LC_TERMINAL', '-o', 'SendEnv=LC_TERMINAL_VERSION', '-o', 'SendEnv=LC_KOLONKA_TOKEN', '-p', '2222', '--', 'leo@myserver', 'cd ~/x && claude']);
+    ['-t', '-o', 'SendEnv=LC_TERMINAL', '-o', 'SendEnv=LC_TERMINAL_VERSION', '-o', 'SendEnv=KOLONKA_TOKEN', '-p', '2222', '--', 'leo@myserver', 'cd ~/x && claude']);
   assert.deepEqual(R.buildSshArgs({ destination: 'myserver', options: [], cmd: '' }).slice(-2), ['--', 'myserver'], 'no command: a login shell');
 });
 
@@ -228,7 +228,7 @@ test('sshCommandLine picks the quoting by the ssh.exe; nothing starts unquoted',
   const argv = R.buildSshArgs({ destination: 'myserver', options: [], cmd: '@C:\\x' });
   const win = R.sshCommandLine('C:\\Windows\\System32\\OpenSSH\\ssh.exe', argv);
   const git = R.sshCommandLine('C:\\Program Files\\Git\\usr\\bin\\ssh.exe', argv);
-  assert.equal(win, '"-t" "-o" "SendEnv=LC_TERMINAL" "-o" "SendEnv=LC_TERMINAL_VERSION" "-o" "SendEnv=LC_KOLONKA_TOKEN" "--" "myserver" "@C:\\x"');
+  assert.equal(win, '"-t" "-o" "SendEnv=LC_TERMINAL" "-o" "SendEnv=LC_TERMINAL_VERSION" "-o" "SendEnv=KOLONKA_TOKEN" "--" "myserver" "@C:\\x"');
   assert.ok(git.endsWith('"--" "myserver" "@C:\\\\x"'));
   for (const line of [win, git]) for (const w of line.split(' ')) assert.equal(w[0], '"');
   assert.ok(R.isMsysSsh('C:/Program Files/Git/usr/bin/ssh.exe'));
