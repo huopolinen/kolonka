@@ -1,7 +1,7 @@
 {
   "name": "kolonka",
   "productName": "Kolonka",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Windows terminal with vertical tabs, workspaces, hold-to-talk voice input and a full control API for scripts and coding agents",
   "main": "src/main/main.js",
   "private": true,
