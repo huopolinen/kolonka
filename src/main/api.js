@@ -37,6 +37,11 @@ function startApi({ model, dataDir, port, hooks }) {
   route('GET', '/api/shells', () => Object.fromEntries(Object.entries(model.shells).map(([k, v]) => [k, { label: v.label, file: v.file }])));
 
   route('GET', '/api/workspaces', () => model.tree().workspaces);
+  // one workspace by any target (id, name, 1-based position, current), in the shape of /api/tree
+  route('GET', '/api/workspaces/:w', ({ p }) => {
+    const ws = model.resolveWorkspace(p.w);
+    return model.tree().workspaces.find((w) => w.id === ws.id);
+  });
   route('POST', '/api/workspaces', ({ body }) => {
     const ws = model.createWorkspace(body);
     return { id: ws.id, name: ws.name };

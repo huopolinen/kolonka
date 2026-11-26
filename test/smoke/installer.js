@@ -2,7 +2,8 @@
 // Install → hooks → uninstall round trip of the NSIS installer. Windows only; run after
 // `electron-builder --win nsis --prepackaged dist/win-unpacked`.
 //   node test/smoke/installer.js [path\to\Kolonka-Setup.exe]
-// Checks that the hooks run without node in PATH, that a silent uninstall removes them (old and new format)
+// Checks that the hooks run without node in PATH, that installing again over the app (an update) keeps them,
+// that a silent uninstall removes them (old and new format)
 // and keeps the user's other hooks, that the hook command stays silent once Kolonka is gone, and that
 // a silent uninstall keeps the downloaded voice files.
 const { spawnSync } = require('child_process');
@@ -94,6 +95,16 @@ function main() {
     const st = run(GIT_BASH, ['-c', `sh '${path.join(BIN, 'kolonka').replace(/\\/g, '/')}' hooks status`], { env: noNode });
     assert.equal(st.status, 0, st.stderr);
     assert.match(st.stdout, /^installed/, 'the launcher falls back to Kolonka.exe without node');
+
+    // installing again over the installed app (an update) runs the old uninstaller with --updated,
+    // which must leave the hooks alone
+    const before = commands();
+    const again = run(SETUP, ['/S']);
+    assert.equal(again.status, 0, 'second installer exit code');
+    assert.ok(fs.existsSync(EXE), 'Kolonka.exe is still installed after the update');
+    cmds = commands();
+    assert.equal(cmds.filter((c) => c.includes(MARK)).length, 4, 'four hooks after installing over the installed app');
+    assert.deepEqual(cmds, before, 'the update did not change the hooks');
 
     // put the legacy hook back next to the new ones: uninstall must remove both
     const cfg = JSON.parse(fs.readFileSync(SETTINGS, 'utf8'));

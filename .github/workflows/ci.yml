@@ -36,8 +36,9 @@ jobs:
             ~\AppData\Local\electron-builder\Cache
           key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
-      # Node 22 ships npm 10, which runs install scripts: electron's postinstall downloads the binary,
-      # node-pty's picks its prebuilt addon. The next step fails loudly if either did not happen.
+      # Node 22 ships npm 10, which runs install scripts: node-pty's picks its prebuilt addon. Since Electron 42
+      # the electron package no longer downloads its binary on install (it does so on the first `npx electron`),
+      # and packaging does not need it: electron-builder fetches the Electron zip for the target itself.
       - name: Install dependencies
         run: |
           npm --version
@@ -47,12 +48,9 @@ jobs:
         shell: bash
         run: |
           node -e '
-            const fs = require("fs");
-            const exe = require("electron");
-            if (!fs.existsSync(exe)) throw new Error("electron binary is missing: " + exe);
-            console.log("electron:", exe);
             require("node-pty");
             console.log("node-pty: loads");
+            console.log("electron:", require("electron/package.json").version);
           '
 
       - name: Unit tests
@@ -67,6 +65,24 @@ jobs:
       # the NSIS installer from the same build; the round trip covers the uninstaller's hook cleanup
       - name: Build the installer
         run: npx electron-builder --win nsis --prepackaged dist/win-unpacked --publish never
+
+      # sizes in the job summary, so a change that bloats the package shows up in review
+      - name: Package size
+        shell: pwsh
+        run: |
+          $mb = { param($n) '{0:N1} MB' -f ($n / 1MB) }
+          $sum = { param($p) (Get-ChildItem $p -Recurse -File | Measure-Object Length -Sum).Sum }
+          $setup = Get-Item dist/Kolonka-Setup-*.exe
+          $rows = @(
+            @('installer', $setup.Length),
+            @('win-unpacked', (& $sum dist/win-unpacked)),
+            @('locales', (& $sum dist/win-unpacked/locales)),
+            @('resources/app.asar', (Get-Item dist/win-unpacked/resources/app.asar).Length),
+            @('resources/app.asar.unpacked', (& $sum dist/win-unpacked/resources/app.asar.unpacked))
+          )
+          $md = @('| | size | bytes |', '|---|---|---|') + ($rows | ForEach-Object { "| $($_[0]) | $(& $mb $_[1]) | $($_[1]) |" })
+          $md -join "`n" | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY
+          Get-ChildItem dist/win-unpacked/resources/app.asar.unpacked -Recurse -File | ForEach-Object { '{0,12} {1}' -f $_.Length, $_.FullName.Substring((Resolve-Path dist/win-unpacked).Path.Length + 1) }
 
       - name: Install / uninstall round trip
         run: node test/smoke/installer.js

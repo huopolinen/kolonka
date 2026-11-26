@@ -1,0 +1,159 @@
+name: Release
+
+# A release is built here, from the tagged commit, never on a developer machine:
+#   git tag v0.2.0 && git push origin v0.2.0   ->  a draft GitHub Release with the installer, its blockmap,
+#   latest.yml, SHA256SUMS.txt and a build provenance attestation; the maintainer reviews and publishes it.
+# workflow_dispatch with dry_run (the default) and pull requests that change this file build and check
+# everything but keep the files as workflow artifacts and create no release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and check only; keep the files as workflow artifacts, create no release
+        type: boolean
+        default: true
+  pull_request:
+    paths: ['.github/workflows/release.yml']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Runs the project's install scripts and build tools, so it gets a read-only token and nothing else.
+  build:
+    name: build
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      DRY_RUN: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      dry_run: ${{ steps.meta.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Version and tag
+        id: meta
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "package.json version: $version, ref: $GITHUB_REF_TYPE $GITHUB_REF_NAME, dry run: $DRY_RUN"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match package.json version $version (expected v$version)"
+              exit 1
+            fi
+          elif [ "$DRY_RUN" != true ]; then
+            echo "::error::a release is built from a tag v$version; run with dry_run on a branch"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+
+      # no dependency cache beyond npm's own (npm ci checks every package against package-lock.json)
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build the installer
+        run: npx electron-builder --win nsis --publish never
+
+      # Code signing goes here once the project has a certificate (SignPath Foundation for open source):
+      # sign dist/win-unpacked/Kolonka.exe before the installer is built, then the installer itself.
+      # latest.yml and the blockmap hold hashes of the installer, so they must be produced after signing,
+      # and the checksums and the attestation below must cover the signed files.
+
+      - name: Smoke test of the packaged app
+        run: node test/smoke/packaged.js
+
+      - name: Install / uninstall round trip
+        run: node test/smoke/installer.js
+
+      - name: Checksums
+        shell: bash
+        working-directory: dist
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          files=("Kolonka-Setup-$VERSION.exe" "Kolonka-Setup-$VERSION.exe.blockmap" latest.yml)
+          for f in "${files[@]}"; do [ -f "$f" ] || { echo "::error::dist/$f was not built"; exit 1; }; done
+          sha256sum "${files[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          { echo '```'; cat SHA256SUMS.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kolonka-${{ steps.meta.outputs.version }}
+          path: |
+            dist/Kolonka-Setup-${{ steps.meta.outputs.version }}.exe
+            dist/Kolonka-Setup-${{ steps.meta.outputs.version }}.exe.blockmap
+            dist/latest.yml
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  # Only this job can write: it attests the installer and creates the draft release, from the files the
+  # build job produced (checked against SHA256SUMS.txt first). It never runs on a dry run.
+  publish:
+    name: publish
+    needs: build
+    if: needs.build.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: kolonka-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Verify the files
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS.txt
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/Kolonka-Setup-${{ needs.build.outputs.version }}.exe
+
+      - name: Draft release
+        working-directory: dist
+        run: |
+          tag="v$VERSION"
+          files=("Kolonka-Setup-$VERSION.exe" "Kolonka-Setup-$VERSION.exe.blockmap" latest.yml SHA256SUMS.txt)
+          cat > notes.md <<EOF
+          The installer is not code-signed yet. To check the download: its SHA-256 is in \`SHA256SUMS.txt\`, and
+          \`gh attestation verify Kolonka-Setup-$VERSION.exe -R $GH_REPO\` proves it was built by this repository's release workflow.
+          EOF
+          if gh release view "$tag" --json isDraft --jq .isDraft > is_draft 2>/dev/null; then
+            # a re-run: refresh the files of a draft, never touch a published release
+            if [ "$(cat is_draft)" != true ]; then echo "::error::release $tag is already published"; exit 1; fi
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" --draft --verify-tag --title "Kolonka $VERSION" --notes-file notes.md --generate-notes
+          fi
+          echo "Draft release: $(gh release view "$tag" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"

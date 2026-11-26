@@ -7,7 +7,8 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
-const { Dictation, BUILDS, MODELS, download } = require('../src/main/dictation');
+const { Writable } = require('stream');
+const { Dictation, BUILDS, MODELS, download, renameRetry } = require('../src/main/dictation');
 
 const CPU_FILES = ['whisper-server.exe', 'whisper.dll', 'ggml.dll', 'ggml-base.dll', 'ggml-blas.dll', 'libopenblas.dll'];
 
@@ -230,6 +231,48 @@ test('unpack that fails half-way leaves nothing behind', async (t) => {
   assert.equal(fs.existsSync(path.join(dir, 'bin-cpu.tmp')), false);
 });
 
+// fs.renameSync that fails with `code` the first `times` calls, as when Defender still scans the new files
+function lockedRename(times, code = 'EPERM') {
+  const calls = [];
+  const rename = (from, to) => {
+    calls.push([from, to]);
+    if (calls.length <= times) throw Object.assign(new Error(`${code}: operation not permitted, rename`), { code });
+    return fs.renameSync(from, to);
+  };
+  return { rename, calls };
+}
+
+test('unpack waits out a folder briefly locked by an antivirus scan', async (t) => {
+  const dir = tmpDir(t);
+  for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+    const { rename, calls } = lockedRename(2, code);
+    const d = new Dictation({ settings: { dictation: { local: { build: 'cpu', model: 'test' } } }, baseDir: dir, tar: fakeTar(CPU_FILES), rename });
+    await d.unpack(path.join(dir, 'w.zip'), 'cpu');
+    assert.equal(calls.length, 3, code);
+    assert.equal(d.binReady('cpu'), true, code);
+    assert.equal(fs.existsSync(path.join(dir, 'bin-cpu.tmp')), false, code);
+  }
+});
+
+test('unpack gives up on a lock that does not go away and cleans up', async (t) => {
+  const dir = tmpDir(t);
+  const { rename, calls } = lockedRename(Infinity);
+  const d = new Dictation({ settings: { dictation: { local: { build: 'cpu', model: 'test' } } }, baseDir: dir, tar: fakeTar(CPU_FILES), rename });
+  // the real delays add up to a few seconds; the attempts are what matters here
+  t.mock.method(global, 'setTimeout', (fn) => { fn(); return 0; });
+  await assert.rejects(d.unpack(path.join(dir, 'w.zip'), 'cpu'), { code: 'EPERM' });
+  t.mock.restoreAll();
+  assert.ok(calls.length > 3, 'retried before giving up');
+  assert.equal(fs.existsSync(path.join(dir, 'bin-cpu')), false);
+  assert.equal(fs.existsSync(path.join(dir, 'bin-cpu.tmp')), false);
+});
+
+test('renameRetry does not retry other errors', async () => {
+  const { rename, calls } = lockedRename(Infinity, 'ENOENT');
+  await assert.rejects(renameRetry('a', 'b', { rename, delays: [1, 1, 1] }), { code: 'ENOENT' });
+  assert.equal(calls.length, 1);
+});
+
 // ---------- downloads ----------
 async function fileServer(t, body) {
   const server = http.createServer((_req, res) => { res.writeHead(200, { 'content-length': body.length }); res.end(body); });
@@ -255,6 +298,66 @@ test('download deletes a file whose SHA-256 does not match', async (t) => {
   await assert.rejects(download(url, dest, { sha256: 'a'.repeat(64) }), /checksum mismatch/);
   assert.equal(fs.existsSync(dest), false);
   assert.equal(fs.existsSync(dest + '.part'), false);
+});
+
+// A write stream that fails the way a full disk does: the first write fills the buffer (no 'drain' will come),
+// then the write fails with ENOSPC. The .part file exists, as it would after the real open.
+function fullDiskStream(file) {
+  fs.writeFileSync(file, 'partial');
+  return new Writable({
+    highWaterMark: 1,
+    write(_chunk, _enc, cb) { setTimeout(() => cb(Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })), 5); },
+  });
+}
+
+test('download on a full disk fails with a clear error and removes the .part file', { timeout: 5000 }, async (t) => {
+  const dir = tmpDir(t);
+  const body = crypto.randomBytes(300000);
+  const url = await fileServer(t, body);
+  const dest = path.join(dir, 'model.bin');
+  const sha256 = crypto.createHash('sha256').update(body).digest('hex');
+  await assert.rejects(download(url, dest, { sha256, open: fullDiskStream }), (e) => {
+    assert.equal(e.code, 'ENOSPC');
+    assert.match(e.message, /not enough free disk space for model\.bin\.part in /);
+    return true;
+  });
+  assert.equal(fs.existsSync(dest), false);
+  assert.equal(fs.existsSync(dest + '.part'), false);
+});
+
+test('download into a folder that cannot be written fails instead of crashing', { timeout: 5000 }, async (t) => {
+  const dir = tmpDir(t);
+  const body = crypto.randomBytes(1000);
+  const url = await fileServer(t, body);
+  const dest = path.join(dir, 'missing', 'model.bin'); // the folder does not exist: the open fails
+  const sha256 = crypto.createHash('sha256').update(body).digest('hex');
+  await assert.rejects(download(url, dest, { sha256 }), (e) => {
+    assert.equal(e.code, 'ENOENT');
+    assert.match(e.message, /could not write .*model\.bin\.part/);
+    return true;
+  });
+});
+
+test('download waits out a locked .part file before renaming it, and removes it if the lock stays', async (t) => {
+  const dir = tmpDir(t);
+  const body = crypto.randomBytes(1000);
+  const url = await fileServer(t, body);
+  const sha256 = crypto.createHash('sha256').update(body).digest('hex');
+  const dest = path.join(dir, 'model.bin');
+  const ok = lockedRename(1, 'EBUSY');
+  await download(url, dest, { sha256, rename: ok.rename });
+  assert.equal(ok.calls.length, 2);
+  assert.deepEqual(fs.readFileSync(dest), body);
+
+  // the real delays add up to a few seconds; an in-memory response keeps timers out of the HTTP client
+  const dest2 = path.join(dir, 'model2.bin');
+  const stuck = lockedRename(Infinity, 'EBUSY');
+  const memFetch = async () => ({ ok: true, status: 200, body: [body], headers: { get: () => String(body.length) } });
+  t.mock.method(global, 'setTimeout', (fn) => { fn(); return 0; });
+  await assert.rejects(download(url, dest2, { sha256, fetch: memFetch, rename: stuck.rename }), { code: 'EBUSY' });
+  t.mock.restoreAll();
+  assert.equal(fs.existsSync(dest2), false);
+  assert.equal(fs.existsSync(dest2 + '.part'), false);
 });
 
 test('download refuses to run without a checksum', async (t) => {

@@ -86,6 +86,7 @@ async function main() {
   if (process.platform !== 'win32') throw new Error('the packaged smoke test runs on Windows only');
   if (!fs.existsSync(EXE)) throw new Error(`no ${EXE}; build it with: npx electron-builder --win dir`);
   if (!fs.existsSync(PACKAGED_CLI)) throw new Error(`the CLI is not packaged: no ${PACKAGED_CLI}`);
+  checkPackageContents();
   fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify(SETTINGS, null, 2));
 
   startApp();
@@ -117,6 +118,11 @@ async function main() {
   if (matched !== 'kolonka-wait-ok') throw new Error(`run --wait printed "${matched}"`);
 
   await checkCmdFallback();
+
+  // Electron APIs the control API relies on: capturePage and a Windows notification
+  const shot = JSON.parse(await api('POST', '/api/screenshot', {}));
+  if (!shot.png || !Buffer.from(shot.png, 'base64').subarray(1, 4).equals(Buffer.from('PNG'))) throw new Error('screenshot did not return a PNG');
+  await api('POST', '/api/notify', { title: 'smoke', text: 'notification check' });
 
   log('quitting through the API');
   await api('POST', '/api/window', { action: 'quit' });
@@ -153,6 +159,67 @@ async function checkCmdFallback() {
   if (val('RC') !== '0') throw new Error('kolonka.cmd ls through Kolonka.exe failed');
   if (!/\tsmoke\t/.test(out)) throw new Error('kolonka.cmd ls did not list the smoke session');
   if (val('ENV') !== 'clean') throw new Error('ELECTRON_RUN_AS_NODE leaked out of kolonka.cmd');
+}
+
+// What the package must and must not contain (build.files in package.json). The app starting and running
+// a shell proves the kept files are enough; this catches a dropped exclusion that bloats the package again.
+const REQUIRED = [
+  'node_modules/node-pty/lib/index.js',
+  'node_modules/node-pty/prebuilds/win32-x64/conpty.node',
+  'node_modules/node-pty/prebuilds/win32-x64/conpty_console_list.node',
+  'node_modules/@xterm/xterm/lib/xterm.js',
+  'node_modules/@xterm/xterm/css/xterm.css',
+  'node_modules/@xterm/headless/lib-headless/xterm-headless.js',
+  'src/main/main.js',
+];
+const FORBIDDEN = [
+  [/\.pdb$/i, 'debug symbols'],
+  [/\.map$/i, 'source maps'],
+  [/\.mjs$/i, 'ES module builds (the app loads the CommonJS ones)'],
+  [/\.test\.js$/i, 'tests'],
+  [/^node_modules\/node-addon-api\//, 'node-addon-api (build-time headers)'],
+  [/^node_modules\/@xterm\/[^/]+\/(src|typings)\//, 'xterm TypeScript sources'],
+  [/^node_modules\/node-pty\/(src|deps|scripts|third_party|typings)\//, 'node-pty sources'],
+  [/^node_modules\/node-pty\/build\//, 'the copy of conpty.dll from node-pty\'s install script'],
+  [/^node_modules\/node-pty\/prebuilds\/(?!win32-x64\/)/, 'prebuilds for other platforms'],
+  [/^node_modules\/node-pty\/prebuilds\/win32-x64\/conpty\//, 'the bundled conpty.dll (only used with useConptyDll)'],
+  [/^node_modules\/node-pty\/prebuilds\/win32-x64\/(pty\.node|winpty)/i, 'winpty (node-pty uses it only before Windows 10 1903, which Kolonka does not support)'],
+];
+
+function packagedFiles() {
+  const resources = path.join(path.dirname(EXE), 'resources');
+  const files = new Set();
+  // @electron/asar comes with electron-builder; the header lists the unpacked entries too
+  const { header } = require('@electron/asar').getRawHeader(path.join(resources, 'app.asar'));
+  const fromHeader = (node, rel) => {
+    for (const [name, child] of Object.entries(node.files || {})) {
+      const r = rel ? `${rel}/${name}` : name;
+      if (child.files) fromHeader(child, r); else files.add(r);
+    }
+  };
+  fromHeader(header, '');
+  const walk = (dir, rel) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(path.join(dir, e.name), r); else files.add(r);
+    }
+  };
+  const unpacked = path.join(resources, 'app.asar.unpacked');
+  if (fs.existsSync(unpacked)) walk(unpacked, '');
+  return files;
+}
+
+function checkPackageContents() {
+  const files = packagedFiles();
+  const missing = REQUIRED.filter((f) => !files.has(f));
+  if (missing.length) throw new Error('the package lacks: ' + missing.join(', '));
+  const extra = [];
+  for (const f of files) for (const [re, what] of FORBIDDEN) if (re.test(f)) extra.push(`${f} (${what})`);
+  // Chromium's own UI strings: only the languages Kolonka has (build.electronLanguages)
+  const locales = fs.readdirSync(path.join(path.dirname(EXE), 'locales')).sort();
+  if (locales.join(',') !== 'en-US.pak,ru.pak') extra.push(`locales: ${locales.join(', ')} (only en-US and ru are needed)`);
+  if (extra.length) throw new Error(`the package has files it should not ship:\n  ${extra.slice(0, 30).join('\n  ')}${extra.length > 30 ? `\n  … ${extra.length - 30} more` : ''}`);
+  log(`package contents ok: ${files.size} entries`);
 }
 
 function dumpDiagnostics() {
