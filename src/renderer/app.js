@@ -120,7 +120,10 @@ function ensureTerm(id) {
 function markExited(x, code) {
   if (!x || x.exited) return;
   x.exited = true;
-  const note = `\r\n\x1b[2m${t('term.exited', { code })}\x1b[0m\r\n`;
+  // a tab opened over ssh: Enter connects again (the same ssh command)
+  const sess = findSession(x.host.dataset.id);
+  const key = sess && sess.deferred ? 'term.notConnected' : (sess && sess.remote ? 'term.exitedSsh' : 'term.exited');
+  const note = `\r\n\x1b[2m${t(key, { code })}\x1b[0m\r\n`;
   if (x.ready) x.term.write(note);
   else x.queue.push([note, Infinity]); // after the snapshot
 }
@@ -258,9 +261,9 @@ function render() {
       row.classList.toggle('unread', !!s.unread && s.id !== S.state.active);
       row.classList.toggle('exited', !!s.exited);
       row.classList.add('st-' + s.status);
-      const sub = s.title && !/\\|\/|^[A-Z]:/.test(s.title) && !/^(MINGW|bash|pwsh|powershell|cmd)/i.test(s.title)
-        ? s.title : shortPath(s.cwd);
-      row.title = `${s.name}  ·  ${s.id}\n${s.cwd}\n${S.shells[s.shell]?.label || s.shell}  ·  ${statusLabel(s.status)}`;
+      const sub = s.title && !/\\|\/|^[A-Z]:/.test(s.title) && !/^(MINGW|bash|pwsh|powershell|cmd|ssh)/i.test(s.title)
+        ? s.title : (s.remote ? 'ssh ' + s.remote.host : shortPath(s.cwd));
+      row.title = `${s.name}  ·  ${s.id}\n${s.remote ? 'ssh ' + s.remote.host + (s.remote.cmd ? '  ·  ' + s.remote.cmd : '') : s.cwd}\n${S.shells[s.shell]?.label || s.shell}  ·  ${statusLabel(s.status)}`;
       row.innerHTML = `
         ${glyphHtml(s)}
         <div class="sess-text"><div class="sess-name">${esc(s.name)}</div><div class="sess-sub"><bdi>${esc(sub)}</bdi></div></div>
@@ -299,7 +302,7 @@ function renderCrumbs() {
     <span class="crumb-sep">${ICONS.chevron}</span>
     <span class="crumb-name">${esc(s.name)}</span>
     <span class="chip cwd" title="${esc(s.cwd)}">${ICONS.folder}<span>${esc(shortPath(s.cwd))}</span></span>
-    <span class="chip">${esc(S.shells[s.shell]?.label || s.shell)}</span>
+    <span class="chip">${esc(s.remote ? 'ssh ' + s.remote.host : (S.shells[s.shell]?.label || s.shell))}</span>
     ${st}`;
   c.querySelector('.cwd').addEventListener('dblclick', () => api.cmd('open.path', { id: s.id }));
   document.title = `${s.name} — Kolonka`;

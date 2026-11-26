@@ -8,6 +8,9 @@ const { parseOsc7 } = require('./shells');
 const { isSafeLocalPath } = require('./paths');
 const { stripAnsi } = require('./ansi');
 const { OutputLog } = require('./outlog');
+const { parseRemoteOsc, notifyFromOsc9, notifyFromOsc777, newToken } = require('./remote');
+
+const VERSION = require('../../package.json').version;
 
 class Session extends EventEmitter {
   constructor(opts) {
@@ -18,6 +21,18 @@ class Session extends EventEmitter {
     this.cwd = opts.cwd;
     this.shellKey = opts.shellKey;
     this.command = opts.command || null; // initial command, if any; kept for restarts
+    this.ssh = opts.ssh || null;         // { destination, options, cmd } for a tab opened over ssh (shell = ssh.exe)
+    this.rerun = !!opts.rerun;           // run the command again when Kolonka starts
+    this.fromRemote = !!opts.fromRemote; // opened by a server (OSC 7711 open)
+    this.remoteRoot = opts.remoteRoot || null; // the tab whose request opened it (limits are counted there)
+    this.nameFromServer = !!opts.nameFromServer;
+    this._deferred = !!opts.deferred;    // not started yet: shown as "not connected", Enter starts it
+    this.deferred = false;
+    // A secret of this run of the tab, in its environment as KOLONKA_TOKEN (not LC_*: servers forward
+    // LC_* further by default, SendEnv LANG LC_*). A remote control request
+    // carrying it comes from a process of this tab's session, not from text it merely displays.
+    // Never shown in info(), never saved, never logged.
+    this.token = newToken();
     this._runCommand = opts.runCommand !== false; // false when restoring a saved layout
     this.status = 'idle';     // idle | active | blocked | done
     this.unread = false;
@@ -50,15 +65,34 @@ class Session extends EventEmitter {
     this.term.parser.registerOscHandler(7, (data) => { this._setCwd(parseOsc7(data)); return true; });
     this.term.parser.registerOscHandler(9, (data) => {
       if (data.startsWith('9;')) { this._setCwd(data.slice(2).replace(/^"|"$/g, '')); return true; }
+      const n = notifyFromOsc9(data);
+      if (n) { this.emit('remote', n); return true; }
+      return false;
+    });
+    // remote control (src/main/remote.js); the model decides what is allowed
+    this.term.parser.registerOscHandler(7711, (data) => { this.emit('remote', parseRemoteOsc(data)); return true; });
+    this.term.parser.registerOscHandler(777, (data) => {
+      const n = notifyFromOsc777(data);
+      if (n) { this.emit('remote', n); return true; }
       return false;
     });
     this.term.onTitleChange((t) => { this.title = t; this.emit('meta', 'title'); });
     this.term.onBell(() => this.emit('bell'));
+    if (this._deferred) {
+      this.deferred = true;
+      this.exited = true;
+      this.startedAt = Date.now();
+      return;
+    }
 
     const env = Object.assign({}, process.env, sh.env || {}, this._env, {
       COLORTERM: 'truecolor',
       TERM_PROGRAM: 'kolonka',
       KOLONKA_SESSION: this.id,
+      // what programs on a server see (with SendEnv / AcceptEnv): kolonka-remote checks it
+      LC_TERMINAL: 'Kolonka',
+      LC_TERMINAL_VERSION: VERSION,
+      KOLONKA_TOKEN: this.token,
     });
     if (this._pathPrepend) {
       const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
@@ -66,9 +100,15 @@ class Session extends EventEmitter {
     }
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.ELECTRON_NO_ATTACH_CONSOLE;
+    for (const name of sh.unsetEnv || []) {
+      for (const k of Object.keys(env)) if (k.toUpperCase() === name.toUpperCase()) delete env[k];
+    }
 
     const pty = this._pty || require('node-pty');
-    this.proc = pty.spawn(sh.file, (sh.args || []).slice(), {
+    // a shell may bring a ready command line (ssh: quoted by Kolonka for that ssh.exe), which node-pty
+    // passes to Windows as it is
+    const args = process.platform === 'win32' && typeof sh.commandLine === 'string' ? sh.commandLine : (sh.args || []).slice();
+    this.proc = pty.spawn(sh.file, args, {
       name: 'xterm-256color',
       cols: this.cols,
       rows: this.rows,
@@ -190,6 +230,9 @@ class Session extends EventEmitter {
       exited: this.exited,
       exitCode: this.exitCode,
       command: this.command,
+      remote: this.ssh ? { host: this.ssh.destination, cmd: this.ssh.cmd } : null,
+      rerun: this.rerun,
+      deferred: this.deferred,
       seq: this.seq,
       cols: this.cols,
       rows: this.rows,

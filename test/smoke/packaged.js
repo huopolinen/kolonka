@@ -15,7 +15,12 @@ const PORT = 47899;
 
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'kolonka-smoke-'));
 const CONTROL = path.join(DATA, 'control.json');
-const SETTINGS = { backgroundMaterial: 'none', dictation: { enabled: false }, defaultShell: 'cmd', apiPort: PORT };
+// A stand-in for ssh.exe: a copy of node.exe (see checkRemoteControl)
+const FAKE_SSH = path.join(DATA, 'fakessh', 'ssh.exe');
+const SETTINGS = {
+  backgroundMaterial: 'none', dictation: { enabled: false }, defaultShell: 'cmd', apiPort: PORT,
+  remote: { allowHosts: ['myhost:2222'], ssh: FAKE_SSH },
+};
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log('[smoke]', ...a);
@@ -92,7 +97,8 @@ async function main() {
   startApp();
   const control = await waitFor('control.json', 60000, async () => {
     if (app.exitCode !== null) throw new Error(`Kolonka exited early with code ${app.exitCode}`);
-    try { return JSON.parse(fs.readFileSync(CONTROL, 'utf8')); } catch { return null; }
+    // main.js first writes {} to protect the file (KOLONKA_DATA outside the profile), the API then fills it in
+    try { const c = JSON.parse(fs.readFileSync(CONTROL, 'utf8')); return c && c.url && c.token ? c : null; } catch { return null; }
   });
   log('API is up at', control.url);
 
@@ -118,6 +124,7 @@ async function main() {
   if (matched !== 'kolonka-wait-ok') throw new Error(`run --wait printed "${matched}"`);
 
   await checkCmdFallback();
+  await checkRemoteControl();
 
   // Electron APIs the control API relies on: capturePage and a Windows notification
   const shot = JSON.parse(await api('POST', '/api/screenshot', {}));
@@ -220,6 +227,87 @@ function checkPackageContents() {
   if (locales.join(',') !== 'en-US.pak,ru.pak') extra.push(`locales: ${locales.join(', ')} (only en-US and ru are needed)`);
   if (extra.length) throw new Error(`the package has files it should not ship:\n  ${extra.slice(0, 30).join('\n  ')}${extra.length > 30 ? `\n  … ${extra.length - 30} more` : ''}`);
   log(`package contents ok: ${files.size} entries`);
+}
+
+// The live event stream (/api/events), collected into an array.
+function openEvents() {
+  const c = JSON.parse(fs.readFileSync(CONTROL, 'utf8'));
+  const got = [];
+  const req = http.get(c.url + '/api/events', { headers: { authorization: 'Bearer ' + c.token } }, (res) => {
+    res.setEncoding('utf8');
+    let buf = '';
+    res.on('data', (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const line = buf.slice(0, i).split('\n').find((l) => l.startsWith('data: '));
+        buf = buf.slice(i + 2);
+        if (line) got.push(JSON.parse(line.slice(6)));
+      }
+    });
+  });
+  req.on('error', () => {});
+  return { got, close: () => req.destroy() };
+}
+
+// Remote control (OSC 7711, OSC 9) through the real ConPTY, PowerShell and process list:
+//   - LC_TERMINAL=Kolonka is in the environment of a tab
+//   - OSC 7711 notify and OSC 9 printed in a tab come out as session.notify events
+//   - open from a local tab (nothing like ssh running in it) is refused
+//   - open @same from a tab running "ssh.exe -p 2222 myhost" (a copy of node.exe under that name, which
+//     prints the request itself, with the tab's token from its environment) opens, without a question
+//     (myhost:2222 is allowed), a tab that starts remote.ssh with "-t" … "-p" "2222" "--" "myhost" <cmd>;
+//     node then stops at "bad option: -t", which is enough to see the quoted arguments arrived
+async function checkRemoteControl() {
+  const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
+  const events = openEvents();
+  const event = (what, pred) => waitFor(what, 45000, async () => events.got.find(pred));
+  try {
+    const id = (await cli('new', '--shell', 'powershell', '--name', 'osc')).trim();
+    await waitFor('the PowerShell prompt', 60000, async () => /PS .*>/.test(await cli('text', '-t', 'osc')));
+
+    await cli('run', '-t', 'osc', '--', 'Write-Output ("LCT=" + $env:LC_TERMINAL)');
+    await cli('wait', '-t', 'osc', '--pattern', '^LCT=Kolonka', '--screen', '--timeout', '30000');
+
+    await cli('run', '-t', 'osc', '--', `[Console]::Write([char]27 + ']7711;notify;title=${b64('smoke')};text=${b64('hello from 7711')}' + [char]7)`);
+    await event('session.notify from OSC 7711', (e) => e.type === 'session.notify' && e.session === id && e.text === 'hello from 7711' && e.title === 'smoke');
+    await cli('run', '-t', 'osc', '--', "[Console]::Write([char]27 + ']9;hello from osc9' + [char]7)");
+    await event('session.notify from OSC 9', (e) => e.type === 'session.notify' && e.session === id && e.text === 'hello from osc9');
+    log('notify: OSC 7711 and OSC 9 arrived');
+
+    const before = JSON.parse(await cli('ls', '--json')).length;
+    await cli('run', '-t', 'osc', '--', `[Console]::Write([char]27 + ']7711;open;host=${b64('@same')};cmd=${b64('echo nope')}' + [char]7)`);
+    const denied = await event('open from a local tab refused', (e) => e.type === 'remote.denied' && e.session === id);
+    if (denied.reason !== 'no-ssh') throw new Error('open from a local tab: unexpected refusal ' + JSON.stringify(denied));
+    if (JSON.parse(await cli('ls', '--json')).length !== before) throw new Error('open from a local tab created a tab');
+    log('open from a local tab: refused (' + denied.reason + ')');
+
+    fs.mkdirSync(path.dirname(FAKE_SSH), { recursive: true });
+    fs.copyFileSync(process.execPath, FAKE_SSH);
+    const script = path.join(DATA, 'fakessh', 'osc.js');
+    fs.writeFileSync(script, [
+      "const tok = Buffer.from(process.env.KOLONKA_TOKEN || '').toString('base64');",
+      `process.stdout.write('\\x1b]7711;open;host=${b64('@same')};cmd=${b64('echo remote-ok')};name=${b64('from-ssh')};token=' + tok + '\\x07');`,
+      'setTimeout(() => {}, 30000);',
+      '',
+    ].join('\n'));
+    // node -p 2222 prints 2222; the required script keeps it alive and prints the request
+    await cli('run', '-t', 'osc', '--', `$env:NODE_OPTIONS='--require ${script.replace(/\\/g, '/')}'; & '${FAKE_SSH}' -p 2222 myhost`);
+    const opened = await event('open @same from the ssh tab', (e) => e.type === 'remote.opened' && e.session === id);
+    if (opened.host !== 'myhost:2222' || !opened.verified || !opened.rerun) throw new Error('open @same resolved to ' + JSON.stringify(opened));
+    const info = JSON.parse(await cli('info', '-t', opened.created));
+    if (info.shell !== 'ssh' || info.name !== 'from-ssh' || !info.remote || info.remote.host !== 'myhost' || info.remote.cmd !== 'echo remote-ok' || !info.rerun) {
+      throw new Error('unexpected tab opened over ssh: ' + JSON.stringify(info));
+    }
+    const text = await waitFor('the fake ssh.exe to complain about -t', 30000, async () => {
+      const s = await cli('text', '-t', opened.created);
+      return /bad option: -t/.test(s) ? s : null;
+    });
+    log('open @same: ' + opened.created + ' started ssh.exe with -t …: ' + text.trim().split(/\r?\n/).find((l) => /bad option/.test(l)));
+    await cli('keys', '-t', 'osc', 'ctrl+c');
+  } finally {
+    events.close();
+  }
 }
 
 function dumpDiagnostics() {

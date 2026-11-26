@@ -212,3 +212,21 @@ test('GET /api/workspaces/:w returns one workspace by id, name, position or curr
   assert.equal(missing.status, 404);
   assert.match(missing.body.error, /workspace not found: nope/);
 });
+
+// ---------- remote control ----------
+
+test('remote: list allowed hosts, forget a remembered one; rerun and ssh pass through POST /api/sessions', async (t) => {
+  const { api, model, dir } = await start(t);
+  model.allowRemoteHost('myserver');
+  let r = await call(api, 'GET', '/api/remote');
+  assert.deepEqual(r.body, { enabled: true, allowHosts: [], remembered: ['myserver'] });
+  r = await call(api, 'DELETE', '/api/remote/hosts/myserver');
+  assert.equal(r.status, 200);
+  assert.deepEqual(model.remoteAllowed, []);
+  assert.equal((await call(api, 'DELETE', '/api/remote/hosts/myserver')).status, 404);
+
+  r = await call(api, 'POST', '/api/sessions', { cwd: dir, command: 'npm run dev', rerun: true });
+  assert.equal(r.body.rerun, true);
+  r = await call(api, 'POST', '/api/sessions', { cwd: dir, ssh: { destination: 'myserver', options: ['-o', 'ProxyCommand=calc'] } });
+  assert.equal(r.status, 400, 'unsafe ssh options are refused');
+});
