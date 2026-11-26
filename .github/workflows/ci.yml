@@ -16,7 +16,7 @@ jobs:
   ci:
     name: ci
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     env:
       # no code signing in CI
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -56,15 +56,18 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: Package (win-unpacked)
-        run: npx electron-builder --win dir --publish never
+      # the installer and dist/win-unpacked in one build, as release.yml builds them: only an NSIS build writes
+      # resources/app-update.yml, without which the app cannot update itself
+      - name: Build the installer
+        run: npx electron-builder --win nsis --publish never
 
       - name: Smoke test of the packaged app
         run: node test/smoke/packaged.js
 
-      # the NSIS installer from the same build; the round trip covers the uninstaller's hook cleanup
-      - name: Build the installer
-        run: npx electron-builder --win nsis --prepackaged dist/win-unpacked --publish never
+      # what electron-updater relies on: latest.yml names this installer with its real sha512, the blockmap
+      # covers it, the installer needs no elevation, app-update.yml points at this repository
+      - name: Release files
+        run: node test/smoke/release-files.js
 
       # sizes in the job summary, so a change that bloats the package shows up in review
       - name: Package size
@@ -84,5 +87,18 @@ jobs:
           $md -join "`n" | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY
           Get-ChildItem dist/win-unpacked/resources/app.asar.unpacked -Recurse -File | ForEach-Object { '{0,12} {1}' -f $_.Length, $_.FullName.Substring((Resolve-Path dist/win-unpacked).Path.Length + 1) }
 
+      # the round trip covers the uninstaller's hook cleanup
       - name: Install / uninstall round trip
         run: node test/smoke/installer.js
+
+      # The same app with the patch version + 1, served from a local feed: the installed base version finds it,
+      # downloads it and installs it, once on quit and once with "Restart to update".
+      - name: Build the next version
+        shell: bash
+        run: |
+          next=$(node -p "const v = require('./package.json').version.split('.').map(Number); v[2]++; v.join('.')")
+          npx electron-builder --win nsis --publish never -c.extraMetadata.version=$next -c.directories.output=dist-next
+          node test/smoke/release-files.js dist-next "$next"
+
+      - name: Update through electron-updater
+        run: node test/smoke/updater.js dist dist-next

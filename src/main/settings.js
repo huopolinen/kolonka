@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS = {
   scrollback: 10000,
   apiPort: 47811,
   notifications: true,
+  updates: 'auto', // auto | notify | off (src/shared/update-policy.js)
   closeOnExit: false,
   backgroundMaterial: 'mica',
   startDir: null,
@@ -49,6 +50,7 @@ const TEMPLATE = `// Kolonka settings. Restart Kolonka to apply.
   // "language": "auto",          // en | ru | auto (follow Windows)
   // "defaultShell": "pwsh",      // bash | pwsh | powershell | cmd | your own key
   // "fontSize": 14,
+  // "updates": "auto",           // auto (download in the background, install on quit) | notify | off
   // "dictation": { "key": "Space", "language": "auto" },
 }
 `;

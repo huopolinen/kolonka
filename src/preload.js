@@ -27,4 +27,5 @@ contextBridge.exposeInMainWorld('kolonka', {
   onToast: on('toast'),
   onWindowFocus: on('window:focus'),
   onWindowAction: on('window:action'),
+  onUpdate: on('update:state'),
 });

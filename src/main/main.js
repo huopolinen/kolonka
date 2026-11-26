@@ -13,6 +13,8 @@ const { publicSettings, settingsSecrets } = require('./settings-public');
 const { needsPrivateAcl, restrictToUser } = require('./acl');
 const { loadSettings } = require('./settings');
 const { resolveDataDir } = require('./datadir');
+const { Updater } = require('./updater');
+const UpdatePolicy = require('../shared/update-policy');
 const I18N = require('../shared/i18n');
 
 const pkg = require('../../package.json');
@@ -79,6 +81,10 @@ dictation.detectBuild(); // GPU probe in the background, off the IPC path
 dictation.killOrphan().then((k) => k && crash.log('info', 'stopped a whisper-server left from a previous run'), (e) => crash.log('warn', 'orphan check: ' + e.message));
 // last resort: the process is exiting without before-quit (app.exit, a fatal error)
 process.on('exit', () => { try { dictation.stopServer(); } catch { /* ignore */ } });
+// updates from GitHub releases ("updates" in settings.json); off in development builds
+const updater = new Updater({ mode: settings.updates, version: pkg.version, log: (level, msg) => crash.log(level, msg), isPackaged: app.isPackaged, isolated: ISOLATED });
+updater.on('state', (s) => send('update:state', s));
+updater.on('download-failed', (f) => send('toast', { title: t('update.downloadFailed'), text: f.checksum ? t('update.badChecksum') : f.message }));
 let winState = {};
 const winStateFile = path.join(DATA_DIR, 'window.json');
 try { winState = JSON.parse(fs.readFileSync(winStateFile, 'utf8')); } catch { /* defaults */ }
@@ -265,6 +271,7 @@ ipcMain.handle('init', async () => ({
   version: pkg.version,
   platform: process.platform,
   dictation: dictation.publicConfig(),
+  update: updater.state(),
 }));
 ipcMain.on('log', (_e, level, msg) => crash.log(String(level || 'info'), String(msg || '').slice(0, 4000)));
 ipcMain.handle('dictation:warm', () => { dictation.warm(); return dictation.publicConfig(); });
@@ -317,6 +324,9 @@ ipcMain.handle('cmd', async (_e, name, args = {}) => {
         return true;
       }
       case 'report': crash.report({ title: 'Problem report' }); return true;
+      case 'update.check': return await updater.check({ manual: true });
+      case 'update.download': return await updater.download({ manual: true });
+      case 'update.install': return await installUpdate();
       case 'open.settings': shell.openPath(path.join(DATA_DIR, 'settings.json')); return true;
       case 'open.data': shell.openPath(DATA_DIR); return true;
       case 'open.external': if (/^https?:\/\//.test(args.url)) shell.openExternal(args.url); return true;
@@ -357,6 +367,7 @@ app.whenReady().then(async () => {
   t = I18N.make(lang);
   model.load();
   createWindow();
+  updater.start(); // the first check comes 30 s later, the window does not wait for it
   // hooks written by older versions call `node`, which fails on every Claude Code action without node in PATH
   if (app.isPackaged) { try { require(path.join(BIN_DIR, 'hooks.js')).migrate(); } catch (e) { crash.log('warn', 'hooks migrate: ' + e.message); } }
   try {
@@ -403,10 +414,35 @@ async function protectControlFile() {
   }
 }
 
+// "Restart to update": ask first if sessions are working or waiting for an answer, then quit the way a normal
+// quit does (state saved, shells and whisper-server stopped) and let the installer start Kolonka again.
+let updateAsking = null;
+function installUpdate() {
+  if (!updateAsking) updateAsking = confirmAndInstall().finally(() => { updateAsking = null; });
+  return updateAsking; // a second click while the question is open gets the same answer
+}
+async function confirmAndInstall() {
+  const plan = UpdatePolicy.restartPlan(updater.state(), [...model.sessions.values()].map((s) => s.info()));
+  if (plan.action === 'none') return { error: t('update.notReady') };
+  if (plan.action === 'confirm') {
+    const r = await dialog.showMessageBox(win, {
+      type: 'question', buttons: [t('update.btnRestart'), t('btn.cancel')], defaultId: 1, cancelId: 1,
+      message: t('update.busyQ', { n: plan.busy }), detail: t('update.busyDetail', { version: updater.state().version }),
+    });
+    if (r.response !== 0) return false;
+  }
+  if (!updater.installNow({ beforeQuit: shutdown })) return { error: t('update.notReady') };
+  // quitAndInstall quits as soon as the installer has started. If it could not start it, the shells are
+  // already stopped: start this version again rather than leave a window of dead tabs.
+  setTimeout(() => { crash.log('error', 'the update installer did not start; restarting Kolonka'); app.relaunch(); app.exit(0); }, 15000).unref();
+  return true;
+}
+
 let quitting = false;
 function shutdown() {
   if (quitting) return;
   quitting = true;
+  updater.stop();
   model.shutdown();
   dictation.stopServer();
   if (api) { try { fs.unlinkSync(api.controlFile); } catch { /* ignore */ } }

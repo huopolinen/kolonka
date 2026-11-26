@@ -11,6 +11,7 @@ window.ICONS = (() => {
     terminal: s('<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7 10l3 2.5L7 15M12.5 15H17"/>'),
     check: s('<path d="M5 12.5l4.2 4.2L19 7"/>'),
     edit: s('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>'),
+    update: s('<path d="M12 4v11M7.5 10.5L12 15l4.5-4.5"/><path d="M5 19.5h14"/>'),
     restart: s('<path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4.5h4.5"/>'),
     trash: s('<path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/>'),
     copy: s('<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15V6a1 1 0 0 1 1-1h9"/>'),

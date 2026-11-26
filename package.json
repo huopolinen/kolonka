@@ -23,6 +23,7 @@
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/headless": "^6.0.0",
     "@xterm/xterm": "^6.0.0",
+    "electron-updater": "^6.8.11",
     "node-pty": "^1.1.0"
   },
   "allowScripts": {
@@ -54,7 +55,8 @@
       "!node_modules/node-pty/prebuilds/win32-x64/{conpty/**,pty.node,winpty.dll,winpty-agent.exe}",
       "!node_modules/node-addon-api/**",
       "!node_modules/@xterm/*/{src,typings}/**",
-      "!node_modules/@xterm/**/*.mjs"
+      "!node_modules/**/*.mjs",
+      "!node_modules/**/*.d.ts"
     ],
     "extraResources": [
       {
