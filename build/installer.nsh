@@ -33,9 +33,15 @@ FunctionEnd
       ${GetOptions} $R0 "/S" $R1
       IfErrors 0 kolonka_whisper_done
       MessageBox MB_YESNO|MB_ICONQUESTION "Also delete the voice input files (speech engine and model) in$\r$\n$LOCALAPPDATA\Kolonka\whisper?" IDNO kolonka_whisper_done
-        ; a whisper-server left running would keep its files locked; stop only ours, by path
-        nsExec::Exec `powershell.exe -NoProfile -NonInteractive -Command "Get-Process whisper-server -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like '$LOCALAPPDATA\Kolonka\whisper\*' } | Stop-Process -Force"`
+        ; a whisper-server left running would keep its files locked; stop only ours, by path.
+        ; The folder goes to PowerShell through the environment, not inside the command text: a profile
+        ; path with ' (O'Brien) would end a quoted string, and [ ] would be wildcards for -like.
+        ; (the value goes through a register, so System::Call does not parse it either)
+        StrCpy $R9 "$LOCALAPPDATA\Kolonka\whisper"
+        System::Call 'Kernel32::SetEnvironmentVariable(t "KOLONKA_WHISPER_DIR", t R9) i'
+        nsExec::Exec `powershell.exe -NoProfile -NonInteractive -Command "Get-Process whisper-server -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and $$_.Path.StartsWith($$env:KOLONKA_WHISPER_DIR + '\', [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force"`
         Pop $0
+        System::Call 'Kernel32::SetEnvironmentVariable(t "KOLONKA_WHISPER_DIR", p 0) i'
         RMDir /r "$LOCALAPPDATA\Kolonka\whisper"
         RMDir "$LOCALAPPDATA\Kolonka"
     kolonka_whisper_done:

@@ -100,36 +100,66 @@ function sha256File(file) {
   });
 }
 
+const RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_DELAYS = [100, 200, 400, 800, 1500, 2500]; // ~5.5 s in total
+
+// fs.renameSync that waits out a short lock. On Windows an antivirus scanner (Defender) opens freshly
+// written .exe/.dll files right away, and renaming their folder fails with EPERM/EACCES/EBUSY until it is done.
+async function renameRetry(from, to, { rename = fs.renameSync, delays = RENAME_DELAYS } = {}) {
+  for (let i = 0; ; i++) {
+    try { return rename(from, to); } catch (e) {
+      if (i >= delays.length || !RETRY_CODES.has(e.code)) throw e;
+      await new Promise((r) => setTimeout(r, delays[i]));
+    }
+  }
+}
+
+// A write error in words the user can act on; the original code stays on the error.
+function writeError(e, file) {
+  const where = path.dirname(file);
+  const msg = e.code === 'ENOSPC' ? `not enough free disk space for ${path.basename(file)} in ${where}`
+    : `could not write ${file}: ${e.message}`;
+  return Object.assign(new Error(msg), { code: e.code, cause: e });
+}
+
 // Download to dest.part, hashing on the fly; dest appears only if the SHA-256 matches.
-async function download(url, dest, { sha256, fetch: doFetch = fetch } = {}, onProgress) {
+// open (fs.createWriteStream) and rename are injectable for tests.
+async function download(url, dest, { sha256, fetch: doFetch = fetch, open = fs.createWriteStream, rename } = {}, onProgress) {
   if (!sha256) throw new Error(`no checksum for ${url}`);
   const res = await doFetch(url, { redirect: 'follow' });
   if (!res.ok || !res.body) throw new Error(`download ${url}: HTTP ${res.status}`);
   const total = Number(res.headers.get('content-length')) || 0;
   const tmp = dest + '.part';
-  const out = fs.createWriteStream(tmp);
+  const out = open(tmp);
+  // A write error (disk full, no access) comes as an 'error' event: without a listener it would crash the
+  // main process, and a write waiting for 'drain' would wait forever. Every wait below races with it.
+  let failed = null;
+  const failure = new Promise((_r, j) => out.once('error', (e) => { failed = writeError(e, tmp); j(failed); }));
+  failure.catch(() => { /* rethrown where it is awaited */ });
   const hash = crypto.createHash('sha256');
   let got = 0;
   let last = 0;
   try {
     for await (const chunk of res.body) {
+      if (failed) throw failed;
       got += chunk.length;
       hash.update(chunk);
-      if (!out.write(chunk)) await new Promise((r) => out.once('drain', r));
+      if (!out.write(chunk)) await Promise.race([new Promise((r) => out.once('drain', r)), failure]);
       if (Date.now() - last > 250) { last = Date.now(); onProgress && onProgress(got, total); }
     }
-    await new Promise((r, j) => out.end((e) => (e ? j(e) : r())));
+    await Promise.race([new Promise((r, j) => out.end((e) => (e ? j(writeError(e, tmp)) : r()))), failure]);
+    if (failed) throw failed;
     if (total && got !== total) throw new Error('download was interrupted');
     const actual = hash.digest('hex');
     if (actual !== sha256.toLowerCase()) {
       throw new Error(`${path.basename(dest)}: checksum mismatch (expected ${sha256}, got ${actual}). The file was deleted; try again, and report it if it keeps happening`);
     }
+    await renameRetry(tmp, dest, { rename });
   } catch (e) {
     if (!out.closed) await new Promise((r) => { out.once('close', r); out.destroy(); });
     try { fs.unlinkSync(tmp); } catch { /* already gone */ }
     throw e;
   }
-  fs.renameSync(tmp, dest);
 }
 
 // Windows' bsdtar can unpack zip archives. Asynchronous, so unpacking does not freeze the window.
@@ -151,8 +181,8 @@ function exePathOf(pid) {
 }
 
 class Dictation extends EventEmitter {
-  // spawn, fetch, tar, hasNvidia, exePathOf, kill: injectable for tests.
-  constructor({ settings, baseDir, spawn, fetch: doFetch, tar: doTar, hasNvidia: probe, exePathOf: exeOf, kill } = {}) {
+  // spawn, fetch, tar, hasNvidia, exePathOf, kill, rename: injectable for tests.
+  constructor({ settings, baseDir, spawn, fetch: doFetch, tar: doTar, hasNvidia: probe, exePathOf: exeOf, kill, rename } = {}) {
     super();
     this.cfg = mergeDeep(DEFAULTS, settings.dictation || {});
     this.dir = baseDir;               // %LOCALAPPDATA%\Kolonka\whisper
@@ -169,6 +199,7 @@ class Dictation extends EventEmitter {
     this._hasNvidia = probe || hasNvidia;
     this._exePathOf = exeOf || exePathOf;
     this._kill = kill || ((pid) => process.kill(pid));
+    this._rename = rename || fs.renameSync;
     this._build = null;
     this._detecting = null;
     this._cleanup = null;
@@ -240,7 +271,7 @@ class Dictation extends EventEmitter {
         const zip = path.join(this.dir, `whisper-${build}.zip`);
         if (fs.existsSync(zip) && (await sha256File(zip)) !== src.sha256) fs.unlinkSync(zip);
         if (!fs.existsSync(zip)) {
-          await download(src.url, zip, { sha256: src.sha256, fetch: this._fetch }, (g, t) => this.emit('progress', { stage: build === 'cuda' ? 'whisper (CUDA)' : 'whisper', got: g, total: t }));
+          await download(src.url, zip, { sha256: src.sha256, fetch: this._fetch, rename: this._rename }, (g, t) => this.emit('progress', { stage: build === 'cuda' ? 'whisper (CUDA)' : 'whisper', got: g, total: t }));
         }
         this.emit('progress', { stage: 'unpacking', got: 0, total: 0 });
         await this.unpack(zip, build);
@@ -249,7 +280,7 @@ class Dictation extends EventEmitter {
       if (!this.modelReady()) {
         const m = MODELS[this.cfg.local.model];
         if (!m) throw new Error('unknown model ' + this.cfg.local.model);
-        await download(m.url, this.modelPath(), { sha256: m.sha256, fetch: this._fetch }, (g, t) => this.emit('progress', { stage: 'model ' + this.cfg.local.model, got: g, total: t }));
+        await download(m.url, this.modelPath(), { sha256: m.sha256, fetch: this._fetch, rename: this._rename }, (g, t) => this.emit('progress', { stage: 'model ' + this.cfg.local.model, got: g, total: t }));
       }
       this.emit('progress', { stage: 'done', got: 1, total: 1 });
     })();
@@ -270,7 +301,7 @@ class Dictation extends EventEmitter {
       const missing = [...COMMON_FILES, ...BUILDS[build].files].filter((f) => !fs.existsSync(path.join(path.dirname(exe), f)));
       if (missing.length) throw new Error('the whisper.cpp archive is incomplete, missing: ' + missing.join(', '));
       fs.rmSync(final, { recursive: true, force: true });
-      fs.renameSync(tmp, final);
+      await renameRetry(tmp, final, { rename: this._rename });
     } catch (e) {
       fs.rmSync(tmp, { recursive: true, force: true });
       throw e;
@@ -460,4 +491,4 @@ class Dictation extends EventEmitter {
   secrets() { return [this.cfg.openai && this.cfg.openai.apiKey, this.cfg.groq && this.cfg.groq.apiKey].filter(Boolean); }
 }
 
-module.exports = { Dictation, DEFAULTS, BUILDS, MODELS, download, sha256File };
+module.exports = { Dictation, DEFAULTS, BUILDS, MODELS, download, sha256File, renameRetry };
