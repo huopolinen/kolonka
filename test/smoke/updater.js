@@ -111,9 +111,9 @@ function startFeed(files) {
 
 // ---------- the installed app ----------
 function env(extra = {}) {
-  const e = Object.assign({}, process.env, { CLAUDE_CONFIG_DIR: CLAUDE }, extra);
+  const e = Object.assign({}, process.env, { CLAUDE_CONFIG_DIR: CLAUDE });
   for (const k of ['KOLONKA_DATA', 'KOLONKA_SESSION', 'KOLONKA_NO_UPDATE', 'ELECTRON_RUN_AS_NODE']) delete e[k];
-  return e;
+  return Object.assign(e, extra);
 }
 
 function run(file, args, opts = {}) {
@@ -208,7 +208,9 @@ async function main() {
   log(`base ${base.version} (${base.name}), next ${next.version} (${next.name})`);
   assert.ok(newer(next.version, base.version), 'the next build has a higher version');
   assert.ok(!fs.existsSync(EXE), `Kolonka is already installed in ${INST}`);
-  assert.ok(!fs.existsSync(DATA), `${DATA} exists; this test needs a profile without Kolonka data`);
+  // leftovers of the earlier steps (a Crashpad folder) are fine, Kolonka's own files are not: they are deleted at the end
+  const own = ['settings.json', 'state.json', 'control.json'].filter((f) => fs.existsSync(path.join(DATA, f)));
+  assert.deepEqual(own, [], `${DATA} has Kolonka data; this test needs a profile without it`);
   assert.ok(!fs.existsSync(WHISPER), `${WHISPER} exists; this test would delete it`);
 
   fs.mkdirSync(DATA, { recursive: true });
