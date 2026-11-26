@@ -47,6 +47,7 @@ class Model extends EventEmitter {
     this._denyUntil = new WeakMap(); // session -> time until which its open requests are dropped
     this.askRemote = null;         // async ({ session, from, host, cmd }) -> 'once' | 'always' | 'deny'; set by the window
     this.remoteAllowed = [];       // hosts allowed with "Always for this host" (kept in state.json)
+    this.firstRun = false;
     this._remoteLimit = new remote.RateLimiter(REMOTE_PER_MINUTE, 60000);
     this._remoteLogLimit = new remote.RateLimiter(REMOTE_LOG_PER_MINUTE, 60000);
     this._askChain = Promise.resolve();
@@ -71,6 +72,7 @@ class Model extends EventEmitter {
   // ---------- persistence ----------
   load() {
     const st = this._readState();
+    this.firstRun = !st && !this._unreadable; // no state.json yet: the window offers "Connect a server…"
     const remembered = st && st.remote && Array.isArray(st.remote.allowedHosts) ? st.remote.allowedHosts : [];
     this.remoteAllowed = [...new Set(remembered.filter(remote.validKey))];
     // restore "rerun": every tab with a command runs it again; "fresh" (default): only tabs marked rerun
@@ -602,6 +604,30 @@ class Model extends EventEmitter {
     this.remoteAllowed = this.remoteAllowed.filter((h) => h.toLowerCase() !== String(key).toLowerCase());
     if (this.remoteAllowed.length !== before) this.changed();
     return before !== this.remoteAllowed.length;
+  }
+
+  // "Connect a server" (⚙ menu, `kolonka remote connect`): the user named the server, so it is trusted
+  // as if they had pressed "Always for this host", and a tab connects to it (rerun: it reconnects when
+  // Kolonka starts). The ssh config side is bin/sshconfig.js. This trusts the host and nothing more:
+  // a request opens a tab without a question only with the tab's own token and for that same host
+  // (_remoteOpen), exactly as after "Always".
+  connectServer({ destination, options = [], cmd = '', name, workspace, open = true, select = true } = {}) {
+    const ssh = remote.normalizeSsh({ destination, options, cmd: cmd || '' });
+    if (!ssh) throw new ApiError(400, 'connect: a valid ssh destination, options -p -l -i -J -4 -6 only, a one-line command');
+    if (ssh.cmd && !open) throw new ApiError(400, 'connect: a command needs a tab (open)');
+    const key = remote.destKey(ssh);
+    this.allowRemoteHost(key);
+    if (!this.remoteHostAllowed(key)) throw new ApiError(500, `connect: ${key} could not be trusted`);
+    let created = null;
+    if (open) {
+      let ws;
+      if (workspace) ws = this.resolveWorkspace(workspace, { required: false }) || this.createWorkspace({ name: remote.sanitize(workspace, remote.MAX_NAME) });
+      created = this.createSession({ workspace: ws ? ws.id : undefined, name: remote.sanitize(name, remote.MAX_NAME), select, rerun: true, ssh });
+    }
+    this.saveNow(); // the trust is on disk before the caller reports it
+    this._log('info', `connected ${key}${created ? `: ${created.id}` : ''}`);
+    this.event('remote.connected', { host: key, session: created ? created.id : null });
+    return { host: key, session: created ? created.id : null };
   }
 
   // One permission dialog at a time. Every request is asked about, also one that waited behind an

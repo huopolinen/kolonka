@@ -45,10 +45,11 @@ function startApp() {
   app.on('error', (e) => { appOutput += `spawn error: ${e.message}\n`; });
 }
 
-// Run the CLI with plain node, the way scripts and agents call it.
-function cli(...args) {
+// Run the CLI with plain node, the way scripts and agents call it. cliEnv: extra environment (cliWith).
+function cli(...args) { return cliWith({}, ...args); }
+function cliWith(extraEnv, ...args) {
   return new Promise((resolve, reject) => {
-    execFile(process.execPath, [PACKAGED_CLI, ...args], { env: env(), timeout: 60000, windowsHide: true }, (err, stdout, stderr) => {
+    execFile(process.execPath, [PACKAGED_CLI, ...args], { env: Object.assign(env(), extraEnv), timeout: 60000, windowsHide: true }, (err, stdout, stderr) => {
       log(`kolonka ${args.join(' ')} -> ${err ? 'exit ' + (err.code ?? err.signal) : 'ok'}`);
       if (err) { err.message = `kolonka ${args.join(' ')} failed: ${stderr || err.message}`; return reject(err); }
       resolve(stdout);
@@ -126,6 +127,7 @@ async function main() {
 
   await checkCmdFallback();
   await checkRemoteControl();
+  await checkConnect();
 
   // Electron APIs the control API relies on: capturePage and a Windows notification
   const shot = JSON.parse(await api('POST', '/api/screenshot', {}));
@@ -314,6 +316,50 @@ async function checkRemoteControl() {
   } finally {
     events.close();
   }
+}
+
+// "Connect a server" through the packaged CLI and the running app, with USERPROFILE pointing at a throwaway
+// folder (the CLI writes the ssh config of that profile; the real one is never touched):
+//   - remote connect myserver --no-open: %USERPROFILE%\.ssh\config created with Kolonka's block, myserver
+//     trusted ("always for this host") in the app and in its state.json, no tab
+//   - remote connect myserver --name conn: the block is not added twice, a tab ssh -t … -- myserver through
+//     remote.ssh (the fake ssh.exe of checkRemoteControl), marked rerun
+//   - remote disconnect myserver: the block and the trust are gone, the backup of the file is there
+async function checkConnect() {
+  const home = path.join(DATA, 'home');
+  fs.mkdirSync(home);
+  const extra = { USERPROFILE: home };
+  const file = path.join(home, '.ssh', 'config');
+  const remembered = async () => JSON.parse(await api('GET', '/api/remote')).remembered;
+  const out = await cliWith(extra, 'remote', 'connect', 'myserver', '--no-open');
+  log('remote connect myserver --no-open:\n' + out.trimEnd());
+  const text = fs.readFileSync(file, 'utf8');
+  const want = ['# >>> kolonka: myserver', 'Host myserver', '    SendEnv LC_TERMINAL LC_TERMINAL_VERSION KOLONKA_TOKEN', '# <<< kolonka: myserver', ''].join('\r\n');
+  if (text !== want) throw new Error('unexpected ssh config after connect: ' + JSON.stringify(text));
+  if (!(await remembered()).includes('myserver')) throw new Error('myserver is not trusted after connect');
+  const st = JSON.parse(fs.readFileSync(path.join(DATA, 'state.json'), 'utf8'));
+  if (!st.remote || !st.remote.allowedHosts.includes('myserver')) throw new Error('myserver is not in state.json after connect');
+  const icacls = await new Promise((resolve) => execFile('icacls', [file], { windowsHide: true }, (_e, o) => resolve(String(o || ''))));
+  log('icacls of the new config:\n' + icacls.trimEnd());
+  if (/BUILTIN\\Users|Everyone/i.test(icacls)) throw new Error('the new ssh config is open to other users');
+
+  const out2 = await cliWith(extra, 'remote', 'connect', 'myserver', '--name', 'conn');
+  const id = (/tab: (s\d+)/.exec(out2) || [])[1];
+  if (!id) throw new Error('connect did not open a tab: ' + out2);
+  if (fs.readFileSync(file, 'utf8') !== want) throw new Error('connecting again changed the ssh config');
+  const info = JSON.parse(await cli('info', '-t', id));
+  if (info.shell !== 'ssh' || info.name !== 'conn' || !info.remote || info.remote.host !== 'myserver' || !info.rerun) throw new Error('unexpected connect tab: ' + JSON.stringify(info));
+  const screen = await waitFor('the connect tab to start ssh.exe -t …', 30000, async () => {
+    const s = await cli('text', '-t', id);
+    return /bad option: -t/.test(s) ? s : null;
+  });
+  log('connect tab ' + id + ': ' + screen.trim().split(/\r?\n/).find((l) => /bad option/.test(l)));
+
+  await cliWith(extra, 'remote', 'disconnect', 'myserver');
+  if (fs.readFileSync(file, 'utf8') !== '') throw new Error('disconnect left: ' + JSON.stringify(fs.readFileSync(file, 'utf8')));
+  if ((await remembered()).includes('myserver')) throw new Error('myserver is still trusted after disconnect');
+  if (!fs.readdirSync(path.dirname(file)).some((f) => f.startsWith('config.bak-kolonka-'))) throw new Error('no backup of the ssh config');
+  log('connect / disconnect: ssh config, trust and tab as expected');
 }
 
 function dumpDiagnostics() {

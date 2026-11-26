@@ -283,6 +283,41 @@ body.dim-inactive:not(.focused) #card { filter: saturate(.85); }
 .pal-empty { color: var(--faint); padding: 14px 12px; }
 .pal-foot { display: flex; gap: 16px; padding: 8px 14px; border-top: 1px solid var(--popup-edge); color: var(--faint); font-size: 11.5px; }
 
+/* connect a server */
+#connect {
+  position: fixed; inset: 0; z-index: 55; background: rgba(4,6,10,.45);
+  display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh;
+  animation: fade .12s ease;
+}
+#connect[hidden] { display: none; }
+.dlg-box {
+  width: min(480px, calc(100vw - 32px)); background: var(--popup); border: 1px solid var(--popup-edge);
+  border-radius: 14px; box-shadow: var(--shadow); padding: 18px 20px 16px; animation: rise .14s ease;
+  display: flex; flex-direction: column;
+}
+.dlg-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.dlg-sub { color: var(--muted); margin-top: 4px; }
+.dlg-label { color: var(--text-2); font-size: 12px; margin-top: 14px; margin-bottom: 5px; }
+.dlg-input {
+  height: 34px; background: rgba(255,255,255,.04); border: 1px solid var(--popup-edge); border-radius: 8px; outline: none;
+  color: var(--text); font: 13.5px var(--ui-font); padding: 0 10px; user-select: text;
+}
+.dlg-input:focus { border-color: var(--sel-edge); }
+.dlg-input::placeholder { color: var(--faint); }
+.dlg-hint { color: var(--muted); font-size: 12px; margin-top: 6px; min-height: 16px; }
+.dlg-hint.bad { color: var(--red); }
+.dlg-check { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--text-2); }
+.dlg-preview { margin-top: 14px; border-top: 1px solid var(--popup-edge); padding-top: 10px; }
+.dlg-preview[hidden] { display: none; }
+.dlg-preview-head { color: var(--muted); font-size: 12px; word-break: break-all; }
+.dlg-preview pre {
+  margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,.25); color: var(--text-2);
+  font: 12px "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; word-break: break-all; user-select: text;
+}
+.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.btn:disabled { opacity: .6; }
+.toast .t-action { margin-top: 8px; height: 28px; padding: 0 12px; }
+
 /* context menu */
 #menu {
   position: fixed; z-index: 60; min-width: 210px; padding: 5px; background: var(--popup);

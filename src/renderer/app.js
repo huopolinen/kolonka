@@ -47,7 +47,10 @@ let dragInfo = null;
   api.onClosed((id) => disposeTerm(id));
   api.onToast(showToast);
   api.onWindowFocus((f) => document.body.classList.toggle('focused', f));
-  api.onWindowAction((a) => { if (a === 'toggle-sidebar') toggleSidebar(); });
+  api.onWindowAction((a) => {
+    if (a === 'toggle-sidebar') toggleSidebar();
+    else if (a && typeof a.connect === 'string') openConnect(a.connect); // Kolonka.exe --connect=… while running
+  });
 
   Dictation.init(S.dictation, { toast: (title, text) => showToast({ title, text }), t });
   UpdateBar.init(S.update, { api, t, version: S.version, toast: (title, text) => showToast({ title, text }) });
@@ -56,6 +59,11 @@ let dragInfo = null;
   window.addEventListener('unhandledrejection', (e) => api.log('error', 'renderer unhandled rejection: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
   wireChrome();
   render();
+  // Kolonka.exe --connect=<address>: the dialog, filled in; nothing changes until Connect is pressed
+  if (S.connect) openConnect(S.connect);
+  else if (S.firstRun && !S.connected) {
+    showToast({ title: t('connect.welcomeTitle'), text: t('connect.welcomeText'), sticky: true, action: { label: t('connect.menu'), run: () => openConnect() } });
+  }
 })().catch((e) => { try { api.log("error", "renderer init failed: " + (e && e.stack || e)); } catch { /* ignore */ } console.error(e); });
 
 // =============== terminals ===============
@@ -145,6 +153,7 @@ function showActive() {
   const id = S.state.active;
   const sess = findSession(id);
   $('#empty').hidden = !!sess;
+  $('#empty-connect').hidden = (S.connected || 0) > 0;
   for (const [tid, t] of terms) {
     const vis = tid === id;
     t.host.classList.toggle('visible', vis);
@@ -533,7 +542,7 @@ function handleGlobalKey(e) {
 
 document.addEventListener('keydown', (e) => {
   if (e.target.closest && e.target.closest('.xterm')) return; // already handled by xterm
-  if (!$('#palette').hidden || !$('#menu').hidden) return;
+  if (!$('#palette').hidden || !$('#menu').hidden || !$('#connect').hidden) return;
   if (e.target.tagName === 'INPUT') return;
   if (handleGlobalKey(e)) e.preventDefault();
 }, true);
@@ -567,7 +576,7 @@ function runFind(dir) {
 // =============== palette ===============
 let palItems = [];
 let palSel = 0;
-function isOverlayOpen() { return !$('#palette').hidden || !$('#menu').hidden; }
+function isOverlayOpen() { return !$('#palette').hidden || !$('#menu').hidden || !$('#connect').hidden; }
 function openPalette(prefill = '') {
   closeMenu();
   $('#palette').hidden = false;
@@ -633,6 +642,8 @@ function paletteSource() {
   items.push({ group: G, icon: ICONS.bolt, label: t('pal.hooksRemove'), run: () => installHooks(true) });
   if (S.api) items.push({ group: G, icon: ICONS.api, label: t('pal.copyApi'), hint: S.api.url, run: () => api.cmd('clipboard.write', { text: S.api.url }) });
   items.push({ group: G, icon: ICONS.bug, label: t('pal.report'), run: () => api.cmd('report') });
+  items.push({ group: G, icon: ICONS.terminal, label: t('connect.menu'), run: () => openConnect() });
+  items.push({ group: G, icon: ICONS.close, label: t('connect.disconnectMenu'), run: () => disconnectMenu({ x: window.innerWidth / 2 - 110, y: window.innerHeight * 0.14 }) });
   if (UpdateBar.ready()) items.push({ group: G, icon: ICONS.update, label: t('update.restart'), run: UpdateBar.restart });
   items.push({ group: G, icon: ICONS.update, label: t('update.check'), run: UpdateBar.check });
   return items;
@@ -750,6 +761,9 @@ async function installHooks(remove = false) {
 async function settingsMenu(at) {
   const hooksOn = await api.cmd('hooks.status');
   openMenu([
+    { icon: ICONS.terminal, label: t('connect.menu'), run: () => openConnect() },
+    { icon: ICONS.close, label: t('connect.disconnectMenu'), run: () => disconnectMenu(at) },
+    '-',
     { icon: ICONS.bolt, label: hooksOn ? t('menu.hooksOn') : t('menu.hooksOff'), checked: hooksOn, run: () => installHooks(hooksOn) },
     { icon: ICONS.gear, label: t('pal.openSettings'), run: () => api.cmd('open.settings') },
     { icon: ICONS.open, label: t('menu.dataFolder'), run: () => api.cmd('open.data') },
@@ -764,10 +778,84 @@ async function settingsMenu(at) {
   ], at);
 }
 
+// =============== connect a server ===============
+// The dialog of ⚙ → Connect a server…: the address is checked in the main process with the parser the
+// CLI uses (bin/sshconfig.js); under it the block that goes into the ssh config, before anything changes.
+let connectSeq = 0;
+function openConnect(address = '') {
+  closeMenu();
+  $('#palette').hidden = true;
+  $('#connect').hidden = false;
+  $('#connect-addr').value = String(address || '');
+  $('#connect-name').value = '';
+  $('#connect-open').checked = true;
+  $('#connect-ok').disabled = false;
+  updateConnectPreview();
+  $('#connect-addr').focus();
+  $('#connect-addr').select();
+}
+function closeConnect() {
+  $('#connect').hidden = true;
+  terms.get(S.state.active)?.term.focus();
+}
+function connectHint(text, bad) {
+  const h = $('#connect-hint');
+  h.textContent = text || '';
+  h.classList.toggle('bad', !!bad);
+}
+async function updateConnectPreview() {
+  const seq = ++connectSeq;
+  const address = $('#connect-addr').value;
+  if (!address.trim()) { connectHint(t('connect.addressHint')); $('#connect-preview').hidden = true; return; }
+  const r = await api.cmd('connect.preview', { address });
+  if (seq !== connectSeq || $('#connect').hidden) return; // typed on meanwhile
+  if (!r || r.error || r.invalid) { connectHint((r && (r.invalid || r.error)) || t('toast.error'), true); $('#connect-preview').hidden = true; return; }
+  connectHint(r.trusted ? t('connect.alreadyTrusted', { key: r.key }) : t('connect.willTrust', { key: r.key }));
+  $('#connect-preview-head').textContent = r.inConfig ? t('connect.inConfig', { file: r.file }) : t('connect.willAdd', { file: r.file });
+  $('#connect-block').textContent = r.block;
+  $('#connect-preview').hidden = false;
+}
+async function submitConnect() {
+  const ok = $('#connect-ok');
+  if (ok.disabled) return; // one connect at a time: a double Enter must not run it twice
+  ok.disabled = true;
+  let r;
+  try {
+    r = await api.cmd('connect.run', { address: $('#connect-addr').value, name: $('#connect-name').value.trim(), open: $('#connect-open').checked });
+  } finally { ok.disabled = false; }
+  if (!r || r.error) { connectHint((r && r.error) || t('toast.error'), true); return; }
+  closeConnect();
+  await refreshConnected();
+  const what = r.configChanged ? t('connect.doneConfig', { file: r.file }) + (r.backup ? ' ' + t('connect.doneBackup', { backup: r.backup }) : '') : t('connect.doneNoChange');
+  showToast({ title: t('connect.doneTitle', { key: r.key }), text: `${what} ${t('connect.doneServer')}`, session: r.session || undefined, sticky: true });
+}
+async function refreshConnected() {
+  const list = await api.cmd('connect.servers');
+  if (Array.isArray(list)) S.connected = list.length;
+  showActive();
+}
+async function disconnectMenu(at) {
+  const list = await api.cmd('connect.servers');
+  if (!Array.isArray(list)) { toastError((list && list.error) || t('toast.error')); return; }
+  if (!list.length) { showToast({ title: t('connect.noneTitle'), text: t('connect.noneText') }); return; }
+  openMenu([{ head: t('connect.disconnectHead') },
+    ...list.map((sv) => ({ icon: ICONS.close, label: sv.key, hint: sv.config ? 'ssh config' : '', run: () => disconnectServer(sv.key) }))], at);
+}
+async function disconnectServer(key) {
+  const r = await api.cmd('connect.disconnect', { key });
+  if (r === false) return; // cancelled
+  if (!r || r.error) { toastError((r && r.error) || t('toast.error')); return; }
+  await refreshConnected();
+  const parts = [r.configChanged ? t('connect.removedConfig') : t('connect.noBlock'), r.forgot ? t('connect.removedTrust') : ''];
+  showToast({ title: t('connect.disconnected', { key: r.key }), text: parts.filter(Boolean).join(' ') + (r.backup ? ' ' + t('connect.doneBackup', { backup: r.backup }) : '') });
+}
+
 // =============== toasts ===============
-function showToast({ title, text, session, sticky }) {
-  const node = el('div', 'toast', `<span class="t-ico">${ICONS.bolt}</span><div><div class="t-title">${esc(title || 'Kolonka')}</div>${text ? `<div class="t-text">${esc(text)}</div>` : ''}</div>`);
+// action: { label, run } adds a button (the welcome toast's "Connect a server…")
+function showToast({ title, text, session, sticky, action }) {
+  const node = el('div', 'toast', `<span class="t-ico">${ICONS.bolt}</span><div><div class="t-title">${esc(title || 'Kolonka')}</div>${text ? `<div class="t-text">${esc(text)}</div>` : ''}${action ? `<button class="btn t-action">${esc(action.label)}</button>` : ''}</div>`);
   node.addEventListener('click', () => { if (session) api.cmd('session.select', { id: session }); dismiss(); });
+  if (action) node.querySelector('.t-action').addEventListener('click', (e) => { e.stopPropagation(); dismiss(); action.run(); });
   const dismiss = () => { node.classList.add('out'); setTimeout(() => node.remove(), 220); };
   $('#toasts').appendChild(node);
   setTimeout(dismiss, sticky ? 30000 : 6000);
@@ -799,7 +887,14 @@ function wireChrome() {
     const a = e.target.closest('[data-act]')?.dataset.act;
     if (a === 'new-session') newSession();
     if (a === 'new-ws') newWorkspace();
+    if (a === 'connect') openConnect();
   });
+
+  $('#connect-form').addEventListener('submit', (e) => { e.preventDefault(); submitConnect(); });
+  $('#connect-addr').addEventListener('input', updateConnectPreview);
+  $('#connect-cancel').addEventListener('click', closeConnect);
+  $('#connect').addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeConnect(); e.preventDefault(); } });
+  $('#connect').addEventListener('mousedown', (e) => { if (e.target.id === 'connect') closeConnect(); });
 
   const inp = $('#pal-input');
   inp.addEventListener('input', () => { palSel = 0; renderPalette(); });

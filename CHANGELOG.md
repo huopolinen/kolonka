@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Connect a server in one click.** ⚙ → **Connect a server…** (also in the command palette) asks for the address of a server and sets up remote control for it: Kolonka adds a block that sends its variables to that server to `%USERPROFILE%\.ssh\config` (keeping a copy of the old file), trusts the server as with *Always for this host* and opens a tab to it. **Disconnect a server…** undoes it. The same from the command line: `kolonka remote connect ADDRESS` / `kolonka remote disconnect ADDRESS`; `Kolonka.exe --connect=ADDRESS` opens the dialog filled in. A first start offers it next to *New session*.
+
 ## 0.2.0
 
 0.1.0 doesn't update itself — install 0.2.0 once manually; from 0.2.0 on updates arrive automatically. Your tabs, settings and voice files stay.
