@@ -102,14 +102,14 @@ kolonka events                                               # live event stream
 
 A session created with a command (`kolonka new --name srv npm run dev`) remembers it: *Restart* runs it again. When Kolonka itself starts, restored sessions open as plain shells in their folders — commands are never re-run on their own.
 
-Options go before the command for `new`, `type` and `run`: from the first word of the command on, everything is passed as is, so `kolonka run grep -h x` runs `grep -h x`.
+Options go before the command for `new`, `type` and `run`: from the first word of the command on, everything is passed as is, so `kolonka run grep -h x` runs `grep -h x`. To catch a misplaced option, `run` and `type` refuse a command that contains one of their own options (`-t`, `--enter`, `--wait`, `--timeout`, `--json`, `--skip-echo`); a command that really has one goes after `--`: `kolonka run -t "$sid" -- docker build . -t img`.
 
 `wait` matches a regex against **new** output since the call (or the visible screen with `--screen`), waits for `--idle MS` of silence, or for `--exit`. Exit code 2 means timeout; `--timeout 0` waits without a limit.
 
 Two things to know when you wait for the output of a command you have just typed:
 
 - **Output can arrive before `wait` starts.** A fast command may print its result between `kolonka run` and `kolonka wait`. Use `run --wait RE` (one call), or take the position from `type`/`run`/`keys --json` (`{"seq": N}`) and pass it as `wait --since N`: output after that position is searched too.
-- **The shell echoes what you type.** The command line itself shows up in the output, so `run "echo done"` + `wait --pattern done` matches the echo, not the result. `run --wait` skips that first echoed line for you (`wait --skip-echo` does the same); otherwise pick a pattern that is not part of the command, e.g. `--pattern '^done$'` or a marker the command prints, not types.
+- **The shell echoes what you type.** The command line itself shows up in the output, so `run "echo done"` + `wait --pattern done` matches the echo, not the result. `run --wait` skips that first echoed line for you (`wait --skip-echo` does the same); otherwise pick a pattern that is not part of the command, e.g. `--pattern '^done$'` or a marker the command prints, not types. Skipping relies on the echo ending with a line break; a program that redraws the line with cursor moves instead (a full-screen app, some prompts) may need such a pattern too.
 
 `kolonka --help` lists every command.
 
@@ -153,7 +153,7 @@ The hooks call Kolonka's launcher, so they work without Node.js in `PATH`. Outsi
 
 ## Configuration
 
-`%APPDATA%\Kolonka\settings.json` (⚙ → *Open settings.json*; restart to apply). Put only the options you want to change there — everything else keeps its default, and new defaults reach you with updates. Comments (`//`, `/* */`) and trailing commas are allowed. If the file cannot be read, Kolonka says so in the window (and in `logs\main.log`) and runs with the defaults; the file itself is left untouched. Font size changed with <kbd>Ctrl</kbd>+<kbd>=</kbd>/<kbd>-</kbd> and a dragged sidebar width are remembered until you set `fontSize` / `sidebarWidth` here.
+`%APPDATA%\Kolonka\settings.json` (⚙ → *Open settings.json*; restart to apply). Put only the options you want to change there — everything else keeps its default, and new defaults reach you with updates. Comments (`//`, `/* */`) and trailing commas are allowed. If the file cannot be read, Kolonka says so in the window (and in `logs\main.log`) and runs with the defaults; the file itself is left untouched. Font size changed with <kbd>Ctrl</kbd>+<kbd>=</kbd>/<kbd>-</kbd> and a dragged sidebar width are remembered until you set `fontSize` / `sidebarWidth` here. Kolonka 0.1.0 wrote a copy of all its defaults into this file; an untouched copy like that is replaced once by the short template (the old file is kept as `settings.json.bak-0.1.0`), an edited one is left as it is.
 
 ```jsonc
 {

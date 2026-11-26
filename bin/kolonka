@@ -6,12 +6,22 @@ if command -v node >/dev/null 2>&1; then
 fi
 exe="$dir/../../Kolonka.exe"
 [ -f "$exe" ] || { echo "kolonka: node.js or Kolonka.exe is required" >&2; exit 1; }
+case "$1" in
+  # long-running streams: leave the console code page alone
+  stream|events) ELECTRON_RUN_AS_NODE=1 exec "$exe" "$dir/kolonka.js" "$@" ;;
+esac
 # Kolonka.exe writes UTF-8 bytes; switch the console to UTF-8 for the call so they are not shown
-# in the console's own code page (437, 866 ...), and restore it after.
+# in the console's own code page (437, 866 ...), and restore it however the call ends.
 cp=""
 if command -v chcp.com >/dev/null 2>&1; then cp=$(chcp.com 2>/dev/null | tr -dc '0-9'); fi
-[ -n "$cp" ] && chcp.com 65001 >/dev/null 2>&1
+restore() { [ -n "$cp" ] && chcp.com "$cp" >/dev/null 2>&1; cp=""; }
+if [ -n "$cp" ]; then
+  trap restore EXIT
+  trap 'restore; exit 130' INT
+  trap 'restore; exit 143' TERM
+  chcp.com 65001 >/dev/null 2>&1
+fi
 ELECTRON_RUN_AS_NODE=1 "$exe" "$dir/kolonka.js" "$@"
 rc=$?
-[ -n "$cp" ] && chcp.com "$cp" >/dev/null 2>&1
+restore
 exit $rc

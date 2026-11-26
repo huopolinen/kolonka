@@ -1,10 +1,11 @@
 'use strict';
 // Strip terminal escape sequences and control characters from pty output.
-const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*\x1b\\|\x1b[@-Z\\-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
+// Charset designations (ESC ( B) are sequences too and are removed.
+const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b[ -/]+[0-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*\x1b\\|\x1b[@-Z\\-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
 function stripAnsi(s) { return s.replace(ANSI_RE, ''); }
 
 // The start of an escape sequence that has not been terminated yet.
-const PARTIAL_RE = /^\x1b(?:\[[0-?]*[ -/]*|[\]PX^_][^\x07\x1b]*)?$/;
+const PARTIAL_RE = /^\x1b(?:\[[0-?]*[ -/]*|[ -/]+|[\]PX^_][^\x07\x1b]*)?$/;
 // An OSC / DCS / APC string whose terminator (ESC \) was cut right after the ESC.
 const PARTIAL_ST_RE = /^\x1b[\]PX^_][^\x07\x1b]*\x1b$/;
 const MAX_HOLD = 4096;

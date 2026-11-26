@@ -1,10 +1,12 @@
 'use strict';
 // Small pieces of window logic without DOM access, shared with the unit tests.
 (function (root) {
-  // A letter key by its physical position, so shortcuts work on any layout:
-  // on the Russian layout Ctrl+C gives e.key 'с', but e.code is still 'KeyC' (keyCode 67).
+  // A letter shortcut on any layout. A Latin layout (QWERTY, Dvorak, Colemak) gives the letter in
+  // e.key, and that is what the user pressed. A non-Latin one (Russian: Ctrl+C gives 'с') does not,
+  // then the physical key decides: e.code 'KeyC' / keyCode 67, where C is on QWERTY.
   function isKey(e, letter) {
     const L = letter.toUpperCase();
+    if (typeof e.key === 'string' && /^[a-z]$/i.test(e.key)) return e.key.toUpperCase() === L;
     return e.code === 'Key' + L || e.keyCode === L.charCodeAt(0);
   }
 

@@ -15,6 +15,15 @@ test('Ctrl+C / Ctrl+V work by physical key on the Russian layout', () => {
   assert.equal(UiLogic.clipboardAction(key({ key: 'С', code: 'KeyC', keyCode: 67, ctrlKey: true, shiftKey: true }), false), 'copy');
 });
 
+test('on a Latin layout the letter decides, not the position (Dvorak, Colemak)', () => {
+  // Dvorak: the key where QWERTY has I types "c", the QWERTY C key types "j"
+  assert.equal(UiLogic.clipboardAction(key({ key: 'c', code: 'KeyI', keyCode: 67, ctrlKey: true }), true), 'copy-clear');
+  assert.equal(UiLogic.clipboardAction(key({ key: 'j', code: 'KeyC', keyCode: 74, ctrlKey: true }), true), null);
+  // Dvorak V is on QWERTY period; Colemak V stays on KeyV
+  assert.equal(UiLogic.clipboardAction(key({ key: 'v', code: 'Period', keyCode: 86, ctrlKey: true }), false), 'paste');
+  assert.equal(UiLogic.clipboardAction(key({ key: 'k', code: 'KeyV', keyCode: 75, ctrlKey: true }), false), null);
+});
+
 test('keyCode alone is enough when code is missing', () => {
   assert.equal(UiLogic.clipboardAction(key({ keyCode: 86, ctrlKey: true }), false), 'paste');
 });

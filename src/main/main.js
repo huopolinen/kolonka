@@ -11,6 +11,7 @@ const { openableDir } = require('./paths');
 const { publicSettings, settingsSecrets } = require('./settings-public');
 const { needsPrivateAcl, restrictToUser } = require('./acl');
 const { loadSettings } = require('./settings');
+const { resolveDataDir } = require('./datadir');
 const I18N = require('../shared/i18n');
 
 const pkg = require('../../package.json');
@@ -21,11 +22,15 @@ const BIN_DIR = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.
 app.setName('Kolonka');
 nativeTheme.themeSource = 'dark'; // dark Mica regardless of the Windows theme
 app.setAppUserModelId('dev.kolonka.terminal');
-const DATA_DIR = process.env.KOLONKA_DATA || path.join(app.getPath('appData'), 'Kolonka');
+const { dir: DATA_DIR, isolated: ISOLATED } = resolveDataDir(process.env, app.getPath('appData'));
 fs.mkdirSync(DATA_DIR, { recursive: true });
 // An instance with its own data folder is a separate instance: the single-instance lock lives in
 // userData, so without this a second Kolonka with KOLONKA_DATA would just focus the first one and exit.
-if (process.env.KOLONKA_DATA) app.setPath('userData', path.join(DATA_DIR, 'chromium'));
+// KOLONKA_DATA equal to the default folder (inherited from a Kolonka tab) is the normal instance and keeps
+// the normal lock, so it focuses the running Kolonka instead of opening the same state twice.
+if (ISOLATED) app.setPath('userData', path.join(DATA_DIR, 'chromium'));
+// tabs of the normal instance need no KOLONKA_DATA: the CLI and the hooks find %APPDATA%\Kolonka by default
+else delete process.env.KOLONKA_DATA;
 
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
@@ -59,10 +64,11 @@ const crash = new Crash({
 });
 crash.start();
 if (settingsError) crash.log('error', 'settings.json could not be read, using the defaults: ' + settingsError);
+for (const line of loaded.log || []) crash.log('info', line);
 
 shells = detectShells(DATA_DIR);
 Object.assign(shells, settings.shells || {}); // user-defined shells from settings.json
-model = new Model({ dataDir: DATA_DIR, settings, shells, env: { KOLONKA_DATA: DATA_DIR }, pathPrepend: BIN_DIR });
+model = new Model({ dataDir: DATA_DIR, settings, shells, env: ISOLATED ? { KOLONKA_DATA: DATA_DIR } : {}, pathPrepend: BIN_DIR });
 dictation = new Dictation({
   settings,
   baseDir: path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'Kolonka', 'whisper'),

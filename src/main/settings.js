@@ -42,6 +42,55 @@ const TEMPLATE = `// Kolonka settings. Restart Kolonka to apply.
 }
 `;
 
+// The language line of the template, uncommented: a migrated 0.1.0 file that had "auto" keeps it.
+const TEMPLATE_AUTO = TEMPLATE.replace('  // "language": "auto",          //', '  "language": "auto",             //');
+
+// Kolonka 0.1.0 wrote a copy of all its defaults into settings.json on the first run (language "auto"
+// in the first build, "en" after). Such a file pins every default, so a file that is exactly one of
+// these dumps is replaced by the template once; a file the user edited is left as it is.
+const DUMP_0_1_0 = {
+  defaultShell: 'bash',
+  fontFamily: "'Cascadia Mono', 'JetBrains Mono', Consolas, monospace",
+  fontSize: 14,
+  lineHeight: 1.15,
+  cursorStyle: 'bar',
+  cursorBlink: true,
+  scrollback: 10000,
+  apiPort: 47811,
+  notifications: true,
+  closeOnExit: false,
+  backgroundMaterial: 'mica',
+  startDir: null,
+  sidebarWidth: 264,
+  dictation: { enabled: true, key: 'Space', holdMs: 300, engine: 'local', language: 'auto', device: '', autoEnter: false },
+};
+
+function deepEqual(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  const ka = Object.keys(a); const kb = Object.keys(b);
+  return ka.length === kb.length && ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && deepEqual(a[k], b[k]));
+}
+
+// 'en' / 'auto' when `user` (parsed from `text`) is an untouched 0.1.0 dump, otherwise null.
+function dumpOf010(text, user) {
+  if (!user || (user.language !== 'en' && user.language !== 'auto')) return null;
+  if (stripJsonc(text) !== text) return null; // comments or trailing commas: written by a person
+  const { language, ...rest } = user;
+  return deepEqual(rest, DUMP_0_1_0) ? language : null;
+}
+
+// Every option of the 0.1.0 dump is present: probably a dump the user then edited.
+function looksLikeEditedDump(user) {
+  return !!user && Object.keys(DUMP_0_1_0).every((k) => k in user) && 'language' in user;
+}
+
+function writeAtomic(file, text) {
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, file);
+}
+
 // Remove comments and trailing commas, leaving strings alone.
 function stripJsonc(src) {
   let out = '';
@@ -101,20 +150,34 @@ function normalize(user) {
   return out;
 }
 
-// -> { settings, user, error }. A broken file is left as it is: the defaults are used and the error is reported.
+// -> { settings, user, error, log }. A broken file is left as it is: the defaults are used and the error is reported.
 function loadSettings(file) {
   let text;
   try { text = fs.readFileSync(file, 'utf8'); } catch (e) {
-    if (e.code !== 'ENOENT') return { settings: normalize({}), user: {}, error: `${file}: ${e.message}` };
+    if (e.code !== 'ENOENT') return { settings: normalize({}), user: {}, error: `${file}: ${e.message}`, log: [] };
     try { fs.writeFileSync(file, TEMPLATE); } catch { /* read-only folder: defaults */ }
-    return { settings: normalize({}), user: {}, error: null };
+    return { settings: normalize({}), user: {}, error: null, log: [] };
   }
-  try {
-    const user = parseSettings(text);
-    return { settings: normalize(user), user, error: null };
-  } catch (e) {
-    return { settings: normalize({}), user: {}, error: `${file}: ${e.message}` };
+  let user;
+  try { user = parseSettings(text); } catch (e) {
+    return { settings: normalize({}), user: {}, error: `${file}: ${e.message}`, log: [] };
   }
+  const log = [];
+  const lang = dumpOf010(text, user);
+  if (lang) {
+    const backup = file + '.bak-0.1.0';
+    try {
+      if (!fs.existsSync(backup)) fs.writeFileSync(backup, text);
+      writeAtomic(file, lang === 'auto' ? TEMPLATE_AUTO : TEMPLATE);
+      user = lang === 'auto' ? { language: 'auto' } : {};
+      log.push(`settings.json from Kolonka 0.1.0 (a copy of the old defaults) replaced by the short template; the old file is ${backup}`);
+    } catch (e) {
+      log.push(`settings.json from Kolonka 0.1.0 could not be replaced by the template: ${e.message}`);
+    }
+  } else if (looksLikeEditedDump(user)) {
+    log.push('settings.json lists every option, like the copy of the defaults Kolonka 0.1.0 wrote, but it was edited: left as it is. Options set there override new defaults; delete the lines you do not need.');
+  }
+  return { settings: normalize(user), user, error: null, log };
 }
 
-module.exports = { DEFAULT_SETTINGS, TEMPLATE, stripJsonc, parseSettings, normalize, loadSettings };
+module.exports = { DEFAULT_SETTINGS, TEMPLATE, TEMPLATE_AUTO, DUMP_0_1_0, stripJsonc, parseSettings, normalize, loadSettings };

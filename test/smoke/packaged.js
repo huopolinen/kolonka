@@ -127,19 +127,16 @@ async function main() {
   if (fs.existsSync(CONTROL)) throw new Error('control.json is still there after quit');
 }
 
-// kolonka.cmd without node on PATH runs the CLI through Kolonka.exe. It must work, must not leave
-// ELECTRON_RUN_AS_NODE set in the calling cmd, and must give the console its code page back.
+// kolonka.cmd without node on PATH runs the CLI through the real Kolonka.exe: it must work and must not
+// leave ELECTRON_RUN_AS_NODE set in the calling cmd. (The code page switch is checked in test/cmd-wrapper.test.js.)
 async function checkCmdFallback() {
   const cmdCli = path.join(path.dirname(EXE), 'resources', 'bin', 'kolonka.cmd');
   const script = path.join(DATA, 'fallback-check.cmd');
   fs.writeFileSync(script, [
     '@echo off',
-    'chcp 437 >nul',
-    'for /f "tokens=2 delims=:." %%c in (\'chcp\') do echo BEFORE=%%c',
     `call "${cmdCli}" ls`,
     'echo RC=%ERRORLEVEL%',
     'if defined ELECTRON_RUN_AS_NODE (echo ENV=leaked) else (echo ENV=clean)',
-    'for /f "tokens=2 delims=:." %%c in (\'chcp\') do echo AFTER=%%c',
     '',
   ].join('\r\n'));
   const e = env();
@@ -156,9 +153,6 @@ async function checkCmdFallback() {
   if (val('RC') !== '0') throw new Error('kolonka.cmd ls through Kolonka.exe failed');
   if (!/\tsmoke\t/.test(out)) throw new Error('kolonka.cmd ls did not list the smoke session');
   if (val('ENV') !== 'clean') throw new Error('ELECTRON_RUN_AS_NODE leaked out of kolonka.cmd');
-  if (val('BEFORE') !== undefined && (val('AFTER') || '').trim() !== val('BEFORE').trim()) {
-    throw new Error(`the console code page was not restored: ${val('BEFORE')} -> ${val('AFTER')}`);
-  }
 }
 
 function dumpDiagnostics() {

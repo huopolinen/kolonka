@@ -12,7 +12,11 @@ const STATUSES = ['idle', 'active', 'blocked', 'done'];
 const SAVE_DEBOUNCE = 500;
 const SAVE_MAX_WAIT = 2000;
 const MAX_TIMEOUT = 2147483647; // the largest delay setTimeout accepts
+const READ_ATTEMPTS = 3;
+const READ_RETRY_MS = 50;
 const SCREEN_CHECK_MS = 200;    // wait --screen re-reads the screen at least this often while output flows
+
+function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
 // The largest N among ids like "s12" (prefix "s").
 function maxId(ids, prefix) {
@@ -43,6 +47,7 @@ class Model extends EventEmitter {
     this._saveTimer = null;
     this._changeTimer = null;
     this._saveFirstAt = 0;
+    this._unreadable = null; // why state.json could not be read at startup; saving waits until it can
   }
 
   // ---------- persistence ----------
@@ -80,15 +85,44 @@ class Model extends EventEmitter {
 
   // The saved state, or null on the first run. A file that cannot be read as state is moved
   // aside to state.json.bad-<time> so the next save does not overwrite the user's layout.
+  //
+  // Any other read error (EBUSY / EPERM: an antivirus or a sync tool holding the file) is retried a few
+  // times; if it persists, the file is left alone: saving is held back until it can be read (see saveNow).
   _readState() {
     let raw;
-    try { raw = fs.readFileSync(this.stateFile, 'utf8'); } catch { return null; }
+    for (let attempt = 1; ; attempt++) {
+      try { raw = fs.readFileSync(this.stateFile, 'utf8'); break; } catch (e) {
+        if (e.code === 'ENOENT') return null; // first run
+        if (attempt >= READ_ATTEMPTS) {
+          this._unreadable = e.code || e.message;
+          console.error(`state.json could not be read (${this._unreadable}); it is kept and not overwritten until it can be read`);
+          return null;
+        }
+        sleepSync(READ_RETRY_MS);
+      }
+    }
     let st = null;
     try { st = JSON.parse(raw); } catch { st = null; }
     if (st && typeof st === 'object' && Array.isArray(st.workspaces)) return st;
     const bad = `${this.stateFile}.bad-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     try { fs.renameSync(this.stateFile, bad); console.error(`state.json could not be read; moved to ${bad}`); } catch (e) { console.error('state.json could not be read', e); }
     return null;
+  }
+
+  // The state.json that could not be read at startup: once it can be read, keep a copy of it
+  // (state.json.unread-<time>) before the first save replaces it. False while it still cannot be read.
+  _keepUnreadState() {
+    let raw;
+    try { raw = fs.readFileSync(this.stateFile, 'utf8'); } catch (e) {
+      if (e.code !== 'ENOENT') return false;
+      this._unreadable = null; // gone meanwhile: nothing to keep
+      return true;
+    }
+    const copy = `${this.stateFile}.unread-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    try { fs.writeFileSync(copy, raw); } catch (e) { console.error('could not keep a copy of state.json', e); return false; }
+    console.error(`state.json is readable again; the layout it had is kept in ${copy}`);
+    this._unreadable = null;
+    return true;
   }
 
   serialize() {
@@ -109,6 +143,7 @@ class Model extends EventEmitter {
     clearTimeout(this._saveTimer);
     this._saveTimer = null;
     this._saveFirstAt = 0;
+    if (this._unreadable && !this._keepUnreadState()) return;
     try {
       const tmp = this.stateFile + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(this.serialize(), null, 2));
@@ -440,6 +475,7 @@ class Model extends EventEmitter {
       let idleTimer = null;
       let timeoutTimer = null;
       let screenTimer = null;
+      let fullTimer = null;
       let checking = false;
       let lastCheckAt = 0;
       const matcher = re && !screen ? new OutputMatcher(re, { skipLine: !!skipEcho }) : null;
@@ -447,7 +483,7 @@ class Model extends EventEmitter {
         if (done) return; done = true;
         s.off('data', onData); s.off('exit', onExit); s.off('killed', onKilled);
         if (signal) signal.removeEventListener('abort', onAbort);
-        clearTimeout(timeoutTimer); clearTimeout(screenTimer); clearInterval(idleTimer);
+        clearTimeout(timeoutTimer); clearTimeout(screenTimer); clearTimeout(fullTimer); clearInterval(idleTimer);
         err ? reject(err) : resolve(Object.assign({ seq: s.seq }, val));
       };
       const check = async () => {
@@ -468,11 +504,26 @@ class Model extends EventEmitter {
         const delay = Math.max(30, SCREEN_CHECK_MS - (Date.now() - lastCheckAt));
         screenTimer = setTimeout(check, delay);
       };
-      const onData = (d) => {
-        if (matcher) {
-          const m = matcher.push(d);
+      // a match that starts before the quick search window is found by a full search a little later
+      const scheduleFull = () => {
+        const due = matcher.fullScanDue();
+        if (due < 0 || fullTimer || done) return;
+        fullTimer = setTimeout(() => {
+          fullTimer = null;
+          if (done) return;
+          const m = matcher.fullScan();
           if (m) finish(null, { matched: m[0] });
-        } else if (re && screen) scheduleCheck();
+        }, due);
+      };
+      const feed = (d) => {
+        const m = matcher.push(d);
+        if (m) finish(null, { matched: m[0] });
+        else scheduleFull();
+        return !!m;
+      };
+      const onData = (d) => {
+        if (matcher) feed(d);
+        else if (re && screen) scheduleCheck();
       };
       const onExit = (code) => {
         if (exit) finish(null, { exitCode: code });
@@ -481,10 +532,7 @@ class Model extends EventEmitter {
       const onKilled = () => finish(new ApiError(409, `session ${s.id} was closed or restarted`));
       const onAbort = () => finish(new ApiError(499, 'the client went away'));
       if (signal && signal.aborted) return finish(new ApiError(499, 'the client went away'));
-      if (matcher && since !== undefined && since !== null) {
-        const m = matcher.push(s.outputSince(since).data);
-        if (m) return finish(null, { matched: m[0] });
-      }
+      if (matcher && since !== undefined && since !== null && feed(s.outputSince(since).data)) return;
       if (exit && s.exited) return finish(null, { exitCode: s.exitCode });
       if (s.exited && !exit) return finish(new ApiError(409, `session ${s.id} has already exited`));
       s.on('data', onData); s.on('exit', onExit); s.on('killed', onKilled);

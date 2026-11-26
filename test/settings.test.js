@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { DEFAULT_SETTINGS, TEMPLATE, stripJsonc, parseSettings, normalize, loadSettings } = require('../src/main/settings');
+const { DEFAULT_SETTINGS, TEMPLATE, TEMPLATE_AUTO, stripJsonc, parseSettings, normalize, loadSettings } = require('../src/main/settings');
 
 function tmpFile(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kolonka-settings-'));
@@ -85,4 +85,70 @@ test('loadSettings reads a commented file', (t) => {
   assert.equal(r.error, null);
   assert.equal(r.settings.language, 'auto');
   assert.deepEqual(r.user, { language: 'auto' });
+});
+
+// What Kolonka 0.1.0 wrote on the first run: JSON.stringify(DEFAULT_SETTINGS, null, 2) of its main.js
+// (language "auto" in e38f3d5, "en" from 402662b).
+function dump010(language) {
+  return JSON.stringify({
+    language,
+    defaultShell: 'bash',
+    fontFamily: "'Cascadia Mono', 'JetBrains Mono', Consolas, monospace",
+    fontSize: 14,
+    lineHeight: 1.15,
+    cursorStyle: 'bar',
+    cursorBlink: true,
+    scrollback: 10000,
+    apiPort: 47811,
+    notifications: true,
+    closeOnExit: false,
+    backgroundMaterial: 'mica',
+    startDir: null,
+    sidebarWidth: 264,
+    dictation: { enabled: true, key: 'Space', holdMs: 300, engine: 'local', language: 'auto', device: '', autoEnter: false },
+  }, null, 2);
+}
+
+test('migration: an untouched 0.1.0 dump with "en" becomes the template, with a backup', (t) => {
+  const file = tmpFile(t);
+  fs.writeFileSync(file, dump010('en'));
+  const r = loadSettings(file);
+  assert.equal(r.error, null);
+  assert.equal(fs.readFileSync(file, 'utf8'), TEMPLATE);
+  assert.equal(fs.readFileSync(file + '.bak-0.1.0', 'utf8'), dump010('en'));
+  assert.equal(fs.existsSync(file + '.tmp'), false);
+  assert.deepEqual(r.user, {});
+  assert.equal(r.settings.language, 'en');
+  assert.match(r.log.join('\n'), /0\.1\.0/);
+});
+
+test('migration: an untouched 0.1.0 dump with "auto" keeps "language": "auto" explicitly', (t) => {
+  const file = tmpFile(t);
+  fs.writeFileSync(file, dump010('auto'));
+  const r = loadSettings(file);
+  assert.equal(fs.readFileSync(file, 'utf8'), TEMPLATE_AUTO);
+  assert.deepEqual(parseSettings(fs.readFileSync(file, 'utf8')), { language: 'auto' });
+  assert.equal(r.settings.language, 'auto');
+  assert.ok(fs.existsSync(file + '.bak-0.1.0'));
+  // the next start reads the template as it is
+  const again = loadSettings(file);
+  assert.equal(fs.readFileSync(file, 'utf8'), TEMPLATE_AUTO);
+  assert.deepEqual(again.log, []);
+});
+
+test('migration: an edited dump or one with comments is left alone', (t) => {
+  const edited = dump010('en').replace('"fontSize": 14', '"fontSize": 16');
+  const commented = '// mine\n' + dump010('en');
+  const extra = dump010('en').replace('"fontSize": 14', '"fontSize": 14,\n  "closeOnExit2": true');
+  for (const text of [edited, commented, extra, dump010('ru')]) {
+    const file = tmpFile(t);
+    fs.writeFileSync(file, text);
+    const r = loadSettings(file);
+    assert.equal(r.error, null);
+    assert.equal(fs.readFileSync(file, 'utf8'), text, 'unchanged');
+    assert.equal(fs.existsSync(file + '.bak-0.1.0'), false, 'no backup');
+  }
+  const file = tmpFile(t);
+  fs.writeFileSync(file, edited);
+  assert.match(loadSettings(file).log.join('\n'), /left as it is/, 'a line in the log');
 });

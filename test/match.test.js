@@ -59,10 +59,35 @@ test('each chunk is searched with an overlap, not the whole buffer again', () =>
   const re = /never/;
   const exec = re.exec.bind(re);
   re.exec = (s) => { scanned += s.length; return exec(s); };
-  const m = new OutputMatcher(re);
+  const m = new OutputMatcher(re, { now: () => 1000 }); // a burst within one throttle interval
   for (let i = 0; i < 200; i++) m.push('y'.repeat(1000) + '\n');
   // a rescan of the growing buffer would read ~20 MB here
   assert.ok(scanned < 2e6, `scanned ${scanned} characters`);
+});
+
+test('a match longer than the quick-search window is still found (BEGIN[\\s\\S]*END)', () => {
+  assert.equal(feed(/BEGIN[\s\S]*END/, ['BEGIN' + 'x'.repeat(5000), 'END']) !== null, true);
+  assert.equal(feed(/^BEGIN$[\s\S]*^END$/m, ['BEGIN\n' + 'line\n'.repeat(3000), 'END\n']) !== null, true);
+});
+
+test('the full search is throttled and reports when it is due', () => {
+  let now = 1000;
+  const m = new OutputMatcher(/BEGIN[\s\S]*END/, { now: () => now });
+  assert.equal(m.push('BEGIN' + 'x'.repeat(5000)), null);
+  assert.equal(m.push('y'), null); // the quick window misses BEGIN: a full search runs now, nothing to find
+  now = 1050;
+  assert.equal(m.push('END'), null, 'too soon for another full search');
+  assert.equal(m.fullScanDue(), 150);
+  now = 1200;
+  assert.equal(m.fullScan()[0].slice(-3), 'END');
+  assert.equal(m.fullScanDue(), -1);
+});
+
+test('ESC ( B charset designations are stripped, also when cut', () => {
+  assert.equal(new AnsiStream().push('a\x1b(Bb'), 'ab');
+  const a = new AnsiStream();
+  assert.equal(a.push('a\x1b('), 'a');
+  assert.equal(a.push('Bb'), 'b');
 });
 
 test('OutputLog: output after a seq, and whether it is complete', () => {

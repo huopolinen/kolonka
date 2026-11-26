@@ -242,3 +242,62 @@ test('wait results carry the current seq', async (t) => {
   s.emitData('x');
   assert.equal((await p).seq, 1);
 });
+
+test('wait: a pattern spanning more than the quick-search window matches soon after the output', async (t) => {
+  const { model, dir } = makeModel(t);
+  const s = model.createSession({ cwd: dir });
+  const p = model.wait(s.id, { pattern: 'BEGIN[\\s\\S]*END', timeout: 2000 });
+  s.emitData('BEGIN');
+  for (let i = 0; i < 10; i++) s.emitData('x'.repeat(1000)); // a full search runs here: nothing yet
+  s.emitData('END'); // too soon for another one: the timer finds it
+  const started = Date.now();
+  const r = await p;
+  assert.match(r.matched, /^BEGINx+END$/);
+  assert.ok(Date.now() - started < 1000);
+});
+
+// ---------- a shell that does not start ----------
+
+test('a shell that fails to start is an exited session, and Restart starts it again', (t) => {
+  const { model, dir } = makeModel(t);
+  FakeSession.failNextStart = true;
+  const s = model.createSession({ cwd: dir });
+  assert.equal(s.exited, true);
+  assert.equal(s.exitCode, -1);
+  const row = model.tree().workspaces[0].sessions[0];
+  assert.equal(row.exited, true, 'the window learns it from the state (also after a reload)');
+  assert.equal(row.exitCode, -1);
+  // Enter in an exited tab sends session.restart
+  const fresh = model.restartSession(s.id);
+  assert.equal(fresh.exited, false);
+  assert.equal(model.tree().workspaces[0].sessions[0].exited, false);
+});
+
+// ---------- state.json that cannot be read ----------
+
+test('state.json that cannot be read (EBUSY) is not overwritten until it can be read; then a copy is kept', (t) => {
+  const { model, dir } = makeModel(t);
+  const file = path.join(dir, 'state.json');
+  const saved = JSON.stringify({ version: 1, counters: { w: 1, s: 1 }, workspaces: [{ id: 'w1', name: 'mine', sessions: [] }] });
+  fs.writeFileSync(file, saved);
+  let busy = true;
+  let reads = 0;
+  const real = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', function (p, ...rest) {
+    if (p === file && busy) { reads++; throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' }); }
+    return real.call(this, p, ...rest);
+  });
+  model.load();
+  assert.ok(reads >= 2, 'the read is retried');
+  assert.equal(model.workspaces[0].name, 'main', 'starts with a fresh layout');
+  model.saveNow();
+  assert.equal(real(file, 'utf8'), saved, 'the unreadable file is left alone');
+  assert.equal(fs.readdirSync(dir).some((f) => f.startsWith('state.json.bad-')), false, 'not treated as broken');
+
+  busy = false;
+  model.saveNow();
+  const copies = fs.readdirSync(dir).filter((f) => f.startsWith('state.json.unread-'));
+  assert.equal(copies.length, 1);
+  assert.equal(real(path.join(dir, copies[0]), 'utf8'), saved, 'the old layout is kept');
+  assert.equal(JSON.parse(real(file, 'utf8')).workspaces[0].name, 'main', 'saving works again');
+});

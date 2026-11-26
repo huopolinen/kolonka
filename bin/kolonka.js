@@ -26,6 +26,9 @@ Workspaces
 
 Options go before the text for new, type and run: everything from the first word of the
 command on is taken as is (kolonka run grep -h x types "grep -h x"). -- also starts it.
+run and type refuse a command that contains their own options (-t --enter --wait --timeout
+--json --skip-echo) to catch a misplaced option; pass such a command after --:
+  kolonka run -t s3 -- docker build . -t img
 
 Sessions
   new [--ws W] [--name N] [--cwd DIR] [--shell bash|pwsh|powershell|cmd]
@@ -66,11 +69,15 @@ function die(msg, code = 1) { process.stderr.write('kolonka: ' + msg + '\n'); pr
 // everything after it is taken as is, so `kolonka run grep -h x` types `grep -h x`.
 const RAW_COMMANDS = ['run', 'type', 'new'];
 
+// Options of run / type that, found among the words of the command, were most likely meant for Kolonka.
+const RUN_OPTIONS = ['-t', '--target', '--enter', '--wait', '--timeout', '--json', '--skip-echo'];
+
+// dashdash: the command was started with an explicit --
 function parse(argv) {
-  const pos = []; const opt = {}; let rest = null;
+  const pos = []; const opt = {}; let rest = null; let dashdash = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--') { rest = argv.slice(i + 1); break; }
+    if (a === '--') { rest = argv.slice(i + 1); dashdash = true; break; }
     const isOption = a.startsWith('--') || a === '-t' || a === '-n' || a === '-h';
     if (pos.length === 1 && RAW_COMMANDS.includes(pos[0]) && !isOption) { rest = argv.slice(i); break; }
     if (a.startsWith('--')) {
@@ -84,7 +91,14 @@ function parse(argv) {
     else if (a === '-h') opt.help = true;
     else pos.push(a);
   }
-  return { pos, opt, rest };
+  return { pos, opt, rest, dashdash };
+}
+
+// The first word of a run / type command that is a Kolonka option (`run npm test -t s3`), or null.
+// With an explicit -- everything is the command's own (`run -- docker build . -t img`).
+function strayOption(cmd, rest, dashdash) {
+  if (dashdash || !rest || (cmd !== 'run' && cmd !== 'type')) return null;
+  return rest.find((w) => RUN_OPTIONS.includes(w.split('=')[0])) || null;
 }
 
 function control() {
@@ -189,8 +203,10 @@ const hooks = require('./hooks');
 
 // ---------- main ----------
 async function main() {
-  const { pos, opt, rest } = parse(process.argv.slice(2));
+  const { pos, opt, rest, dashdash } = parse(process.argv.slice(2));
   const cmd = pos.shift();
+  const stray = strayOption(cmd, rest, dashdash);
+  if (stray) die(`"${stray}" comes after the command; put options before the command, or use -- to pass it to the command: kolonka ${cmd} [options] -- ${rest.join(' ')}`);
   const words = pos.concat(rest || []); // positional arguments, including those after --
   if (!cmd || opt.help || cmd === 'help') { process.stdout.write(HELP); return; }
   const json = (o) => process.stdout.write(JSON.stringify(o, null, 2) + '\n');
@@ -296,6 +312,6 @@ async function main() {
   }
 }
 
-module.exports = { parse, unescape };
+module.exports = { parse, unescape, strayOption };
 
 if (require.main === module) main().catch((e) => die(e.message));
