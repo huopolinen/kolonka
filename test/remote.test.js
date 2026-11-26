@@ -177,6 +177,20 @@ test('destKey: user@host:port, the user and port from -l / -p too; port 22 is th
   assert.equal(R.destKey({ destination: 'a@prod', options: ['-l', 'b', '-p', '22'] }), 'a@prod', 'user@ wins over -l, like ssh');
 });
 
+test('IPv6 with a port: the key is bracketed, and the fields decide what is the same host', () => {
+  const origin = { destination: 'leo@2001:db8::1', options: ['-p', '2222'] };
+  const named = { destination: 'leo@2001:db8::1:2222' }; // another address, port 22
+  assert.equal(R.destKey(origin), 'leo@[2001:db8::1]:2222');
+  assert.equal(R.destKey(named), 'leo@[2001:db8::1:2222]');
+  assert.notEqual(R.destKey(origin), R.destKey(named));
+  assert.ok(!R.sameDest(named, origin));
+  assert.ok(R.sameDest({ destination: 'leo@MyServer' }, { destination: 'leo@myserver', options: ['-p', '22'] }), 'host in any case, port 22 = none');
+  assert.ok(!R.sameDest({ destination: 'Leo@myserver' }, { destination: 'leo@myserver' }), 'the user exactly');
+  assert.ok(R.sameDest({ destination: 'myserver' }, { destination: 'myserver', options: ['-J', 'bastion'] }), '-J does not change the target');
+  assert.ok(R.validKey('leo@[2001:db8::1]:2222'));
+  assert.ok(!R.validKey('-x') && !R.validKey('@x') && !R.validKey('a b'));
+});
+
 test('hostMatches: the whole key, case-insensitively; "prod" does not cover "root@prod"', () => {
   assert.ok(R.hostMatches('myserver', 'myserver'));
   assert.ok(R.hostMatches('Leo@MyServer', 'leo@myserver'));

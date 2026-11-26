@@ -179,7 +179,34 @@ test('an ssh.exe that is not on the allowed list is not used for the new tab', a
   const s = await env.model.handleRemote(tab, open(tab, { host: '@same' }));
   assert.equal(s.opts.shell.file, SSH);
   assert.equal(s.ssh.exe, undefined);
-  assert.equal(s.opts.shell.unsetEnv, undefined);
+  assert.deepEqual(s.opts.shell.unsetEnv, ['MSYS', 'CYGWIN'], 'for every ssh tab, not only Git\'s');
+});
+
+test('the tab\'s own server named explicitly is treated as @same: its -J and ssh.exe are kept', async (t) => {
+  let tab;
+  const env = makeModel(t, { settings: { remote: { allowHosts: ['internal'] } }, procs: () => sshUnder(tab.pid, 'ssh -J bastion internal', GIT_SSH) });
+  tab = env.model.createSession({ cwd: env.dir });
+  env.answer('deny');
+  const s = await env.model.handleRemote(tab, open(tab, { host: 'internal', cmd: 'htop' }));
+  assert.equal(env.asked.length, 0, 'same host, right token, allowed: no question');
+  assert.deepEqual(s.opts.shell.args, [...SEND_ENV, '-J', 'bastion', '--', 'internal', 'htop'], 'not a direct ssh internal');
+  assert.equal(s.opts.shell.file, GIT_SSH);
+});
+
+test('IPv6 with a port: a named host that only looks like the tab\'s own is not "same"', async (t) => {
+  let tab;
+  const env = makeModel(t, { settings: { remote: { allowHosts: ['leo@[2001:db8::1]:2222', 'leo@[2001:db8::1:2222]'] } }, procs: () => sshUnder(tab.pid, 'ssh -p 2222 leo@2001:db8::1', SSH) });
+  tab = env.model.createSession({ cwd: env.dir });
+  env.answer('deny');
+  assert.equal(await env.model.handleRemote(tab, open(tab, { host: 'leo@2001:db8::1:2222', cmd: 'x' })), undefined);
+  assert.equal(env.asked.length, 1, 'another address: asked');
+  assert.equal(env.asked[0].host, 'leo@[2001:db8::1:2222]');
+  env.model._denyUntil.delete(tab);
+  const s = await env.model.handleRemote(tab, open(tab, { host: '@same', cmd: 'x' }));
+  assert.ok(s, '@same: the tab\'s own server, allowed');
+  assert.equal(env.asked.length, 1);
+  env.model.allowRemoteHost('root@[2001:db8::2]:22');
+  assert.ok(env.model.remoteAllowed.includes('root@[2001:db8::2]:22'), 'bracketed keys can be remembered');
 });
 
 test('Git\'s ssh.exe is started without MSYS / CYGWIN in its environment (MSYS=noglob changes how it reads quotes)', (t) => {

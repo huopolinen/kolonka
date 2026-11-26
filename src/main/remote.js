@@ -298,7 +298,8 @@ function cleanOptions(opts) {
 
 // What a connection is compared by (allowHosts, "Always for this host"): user@host:port, with the
 // user and the port taken from -l / -p when the destination has none. "prod" is not "root@prod".
-function destKey({ destination, options = [] }) {
+// The parts ssh connects with: { user, host, port } (port '22' when none is given).
+function destFields({ destination, options = [] }) {
   let user = null; let host = String(destination || ''); let port = null;
   const at = host.lastIndexOf('@');
   if (at >= 0) { user = host.slice(0, at); host = host.slice(at + 1); }
@@ -306,7 +307,25 @@ function destKey({ destination, options = [] }) {
     if (options[i] === '-l' && !user) user = options[i + 1];
     if (options[i] === '-p') port = options[i + 1];
   }
-  return (user ? user + '@' : '') + host + (port && port !== '22' ? ':' + port : '');
+  return { user, host, port: port || '22' };
+}
+
+// The same connection target: user exactly, host case-insensitively, port.
+function sameDest(a, b) {
+  const x = destFields(a); const y = destFields(b);
+  return x.user === y.user && x.host.toLowerCase() === y.host.toLowerCase() && x.port === y.port;
+}
+
+// A host with ":" (IPv6) is bracketed, so "leo@[2001:db8::1]:2222" cannot be read two ways.
+function destKey(d) {
+  const { user, host, port } = destFields(d);
+  const h = host.includes(':') ? `[${host}]` : host;
+  return (user ? user + '@' : '') + (port !== '22' ? `${h}:${port}` : h);
+}
+
+// A key as destKey writes it (what allowHosts / "Always" hold).
+function validKey(k) {
+  return typeof k === 'string' && k.length > 0 && k.length <= 300 && /^[A-Za-z0-9._@:[\]-]+$/.test(k) && !k.startsWith('-') && !k.startsWith('@');
 }
 
 function hostMatches(entry, key) {
@@ -452,7 +471,7 @@ module.exports = {
   b64decode, b64encode, sanitize, validHost, validCmd, displayCmd,
   parseRemoteOsc, notifyFromOsc9, notifyFromOsc777,
   newToken, tokenEquals,
-  parseWinCommandLine, parseSshArgs, cleanOptions, normalizeSsh, buildSshArgs, destKey, hostMatches,
+  parseWinCommandLine, parseSshArgs, cleanOptions, normalizeSsh, buildSshArgs, destKey, destFields, sameDest, validKey, hostMatches,
   quoteMsvcrt, quoteMsys, isMsysSsh, sshCommandLine,
   findSshExe, isAllowedSshExe, findSshInTree, sshOriginFromTree, listProcesses, parseProcessList,
   RateLimiter,

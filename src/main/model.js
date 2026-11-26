@@ -72,7 +72,7 @@ class Model extends EventEmitter {
   load() {
     const st = this._readState();
     const remembered = st && st.remote && Array.isArray(st.remote.allowedHosts) ? st.remote.allowedHosts : [];
-    this.remoteAllowed = [...new Set(remembered.filter(remote.validHost))];
+    this.remoteAllowed = [...new Set(remembered.filter(remote.validKey))];
     // restore "rerun": every tab with a command runs it again; "fresh" (default): only tabs marked rerun
     const rerunAll = this.settings.restore === 'rerun';
     if (st && Array.isArray(st.workspaces) && st.workspaces.length) {
@@ -322,7 +322,8 @@ class Model extends EventEmitter {
       const argv = remote.buildSshArgs(ssh);
       shell = { label: 'SSH', file, args: argv, commandLine: file ? remote.sshCommandLine(file, argv) : '', env: {} };
       // MSYS=noglob (or CYGWIN) would make Git's ssh.exe read the quotes differently: never inherited
-      if (file && remote.isMsysSsh(file)) shell.unsetEnv = ['MSYS', 'CYGWIN'];
+      // (the OpenSSH client of Windows does not read them, so they go for every ssh tab)
+      shell.unsetEnv = ['MSYS', 'CYGWIN'];
       if (!file) deferred = true;
       command = undefined;
     } else {
@@ -589,7 +590,7 @@ class Model extends EventEmitter {
   }
 
   allowRemoteHost(key) {
-    if (!remote.validHost(key) || this.remoteAllowed.some((h) => h.toLowerCase() === key.toLowerCase())) return;
+    if (!remote.validKey(key) || this.remoteAllowed.some((h) => h.toLowerCase() === key.toLowerCase())) return;
     this.remoteAllowed.push(key);
     this.changed();
   }
@@ -637,7 +638,10 @@ class Model extends EventEmitter {
     if (!origin && (same || !cfg.fromLocalTabs)) return this._remoteDenied(s, same ? 'no-ssh' : 'not-ssh', { host: msg.host });
     // a connection that needs options Kolonka does not carry over (-o, -F …) is not made without them
     if (same && origin.dropped.length) return this._remoteDenied(s, 'ssh-options', { host: remote.destKey(origin), options: origin.dropped });
-    const target = same
+    // the tab's own server named explicitly is the same as @same: its options (-J …) and ssh.exe
+    const sameHost = !!origin && (same || remote.sameDest({ destination: msg.host }, origin));
+    if (!same && sameHost && origin.dropped.length) return this._remoteDenied(s, 'ssh-options', { host: remote.destKey(origin), options: origin.dropped });
+    const target = sameHost
       ? { destination: origin.destination, options: origin.options, exe: origin.exe }
       : { destination: msg.host, options: [], exe: origin ? origin.exe : null };
     if (!(target.exe && this._isAllowedSshExe(target.exe)) && !this._findSshExe()) return this._remoteDenied(s, 'no-ssh-exe', { host: target.destination });
@@ -647,7 +651,6 @@ class Model extends EventEmitter {
     // That only vouches for the server the tab is connected to (the token travels with the session, and
     // a server can forward it further): without a question only to that same host, and only if allowed.
     const verified = remote.tokenEquals(msg.token, s.token);
-    const sameHost = !!origin && key.toLowerCase() === remote.destKey(origin).toLowerCase();
     let trusted = verified && sameHost && this.remoteHostAllowed(key);
     if (!trusted) {
       const answer = await this._askQueued({
