@@ -55,6 +55,18 @@ So I built the terminal I wanted on Windows. Kolonka keeps every shell in a **si
 
 Requirements: Windows 10 1903+ or Windows 11, x64. [Git for Windows](https://git-scm.com/download/win) is recommended (Git Bash becomes the default shell).
 
+### Checking the download
+
+Releases after 0.1.0 are built by GitHub Actions from the tagged commit ([`release.yml`](.github/workflows/release.yml)), not on a developer's machine. Each release has a `SHA256SUMS.txt` and a signed build provenance attestation for the installer, so you can check that the file you have is the one CI built from this repository:
+
+```powershell
+# the checksum must match the line for the installer in SHA256SUMS.txt
+Get-FileHash .\Kolonka-Setup-<version>.exe -Algorithm SHA256
+
+# with the GitHub CLI: proves the file was built by this repository's release workflow
+gh attestation verify .\Kolonka-Setup-<version>.exe -R huopolinen/kolonka
+```
+
 ## Keyboard
 
 | Keys | Action |
@@ -85,6 +97,8 @@ On first use Kolonka offers to download whisper.cpp and the `large-v3-turbo` mod
 Prefer the cloud? Set `"engine": "openai"` or `"groq"` and an `apiKey` (see [Configuration](#configuration)).
 
 ## Scripting
+
+Every Kolonka tab has `kolonka` in its `PATH`. To use it from another terminal (Windows Terminal, an IDE, a scheduled task), call it by its full path or add its folder to your `PATH`: `%LOCALAPPDATA%\Programs\Kolonka\resources\bin\kolonka.cmd` (it uses Node.js if you have it, otherwise Kolonka's own runtime; Git Bash can run `resources/bin/kolonka` from the same folder).
 
 Inside a Kolonka tab `kolonka` targets **its own** session by default (`$KOLONKA_SESSION`); elsewhere it targets the active one. A target can be an id (`s3`), a name, `workspace/name`, a 1-based position, or `current`.
 
@@ -130,7 +144,8 @@ While Kolonka runs, `%APPDATA%\Kolonka\control.json` holds `{ url, port, token }
 | POST | `/api/sessions/:t/wait` | `{pattern, screen, idle, exit, since, skipEcho, timeout}`; `since`: a `seq` from type/keys (the last ~256 KB of output are kept); `timeout`: ms, default 30000, `0` = no limit; a wait ends when the client disconnects |
 | GET | `/api/sessions/:t/stream` | SSE, raw output; ends when the session is closed |
 | GET | `/api/events` | SSE: `session.created/updated/status/selected/closed/exited/bell`, `workspace.*` |
-| GET · POST · PATCH · DELETE | `/api/workspaces[/:w]` | `{name, collapsed, index}`, DELETE `?force=1` |
+| GET · POST | `/api/workspaces` | POST `{name}` |
+| GET · PATCH · DELETE | `/api/workspaces/:w` | GET: one workspace with its sessions, as in `/api/tree`; PATCH `{name, collapsed, index}`; DELETE `?force=1` |
 | POST | `/api/notify` | `{text, title, session}` |
 | POST | `/api/screenshot` | `{path}` |
 | GET · POST | `/api/window` | POST `{action: "focus" \| "toggle-sidebar" \| "quit"}` |
@@ -193,8 +208,8 @@ Kolonka has no telemetry. If the app hits an unexpected error, a window crashes,
 
 ```sh
 git clone https://github.com/huopolinen/kolonka && cd kolonka
-npm install          # npm ≥ 11 may ask you to approve install scripts for electron and node-pty
-npm start            # run from source
+npm install          # npm ≥ 11 may ask you to approve the install script of node-pty
+npm start            # run from source (the first run downloads Electron)
 npm run dist         # build dist/Kolonka-Setup-<version>.exe
 ```
 

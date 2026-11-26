@@ -184,3 +184,31 @@ test('the output stream survives a restart of the session', async (t) => {
   assert.match(got, /after restart/);
   req.destroy();
 });
+
+// ---------- workspaces ----------
+
+test('GET /api/workspaces/:w returns one workspace by id, name, position or current', async (t) => {
+  const { api, model, dir } = await start(t);
+  const created = await call(api, 'POST', '/api/workspaces', { name: 'Demo' });
+  assert.equal(created.status, 200);
+  const s = model.createSession({ workspace: created.body.id, cwd: dir, name: 'build', select: false });
+  const pos = model.tree().workspaces.findIndex((w) => w.id === created.body.id) + 1;
+
+  for (const target of [created.body.id, 'demo', String(pos)]) {
+    const r = await call(api, 'GET', `/api/workspaces/${encodeURIComponent(target)}`);
+    assert.equal(r.status, 200, target);
+    assert.equal(r.body.id, created.body.id, target);
+    assert.equal(r.body.name, 'Demo', target);
+    assert.equal(r.body.collapsed, false, target);
+    assert.deepEqual(r.body.sessions.map((x) => x.id), [s.id], target);
+    assert.deepEqual(r.body, model.tree().workspaces[pos - 1], `${target}: same shape as in /api/tree`);
+  }
+
+  const cur = await call(api, 'GET', '/api/workspaces/current');
+  assert.equal(cur.status, 200);
+  assert.equal(cur.body.id, model.sessions.get(model.activeId).workspaceId, 'current: the workspace of the active session');
+
+  const missing = await call(api, 'GET', '/api/workspaces/nope');
+  assert.equal(missing.status, 404);
+  assert.match(missing.body.error, /workspace not found: nope/);
+});
