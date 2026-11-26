@@ -76,6 +76,7 @@ jobs:
           $rows = @(
             @('installer', $setup.Length),
             @('win-unpacked', (& $sum dist/win-unpacked)),
+            @('locales', (& $sum dist/win-unpacked/locales)),
             @('resources/app.asar', (Get-Item dist/win-unpacked/resources/app.asar).Length),
             @('resources/app.asar.unpacked', (& $sum dist/win-unpacked/resources/app.asar.unpacked))
           )

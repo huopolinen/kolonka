@@ -215,6 +215,9 @@ function checkPackageContents() {
   if (missing.length) throw new Error('the package lacks: ' + missing.join(', '));
   const extra = [];
   for (const f of files) for (const [re, what] of FORBIDDEN) if (re.test(f)) extra.push(`${f} (${what})`);
+  // Chromium's own UI strings: only the languages Kolonka has (build.electronLanguages)
+  const locales = fs.readdirSync(path.join(path.dirname(EXE), 'locales')).sort();
+  if (locales.join(',') !== 'en-US.pak,ru.pak') extra.push(`locales: ${locales.join(', ')} (only en-US and ru are needed)`);
   if (extra.length) throw new Error(`the package has files it should not ship:\n  ${extra.slice(0, 30).join('\n  ')}${extra.length > 30 ? `\n  … ${extra.length - 30} more` : ''}`);
   log(`package contents ok: ${files.size} entries`);
 }
