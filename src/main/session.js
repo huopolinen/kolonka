@@ -5,9 +5,7 @@ const pty = require('node-pty');
 const { Terminal } = require('@xterm/headless');
 const { SerializeAddon } = require('@xterm/addon-serialize');
 const { parseOsc7 } = require('./shells');
-
-const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*\x1b\\|\x1b[@-Z\\-_]|[\x00-\x08\x0b-\x1f\x7f]/g;
-function stripAnsi(s) { return s.replace(ANSI_RE, ''); }
+const { stripAnsi } = require('./ansi');
 
 class Session extends EventEmitter {
   constructor(opts) {

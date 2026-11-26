@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: ci
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      # no code signing in CI
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      # Node 22 ships npm 10, which runs install scripts: electron's postinstall downloads the binary,
+      # node-pty's picks its prebuilt addon. The next step fails loudly if either did not happen.
+      - name: Install dependencies
+        run: |
+          npm --version
+          npm ci
+
+      - name: Check native dependencies
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            const exe = require("electron");
+            if (!fs.existsSync(exe)) throw new Error("electron binary is missing: " + exe);
+            console.log("electron:", exe);
+            require("node-pty");
+            console.log("node-pty: loads");
+          '
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Package (win-unpacked)
+        run: npx electron-builder --win dir --publish never
+
+      - name: Smoke test of the packaged app
+        run: node test/smoke/packaged.js

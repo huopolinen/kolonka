@@ -260,4 +260,6 @@ async function main() {
   }
 }
 
-main().catch((e) => die(e.message));
+module.exports = { parse, unescape };
+
+if (require.main === module) main().catch((e) => die(e.message));
