@@ -8,9 +8,11 @@ usage() {
   cat <<'EOF'
 kolonka (remote) — control Kolonka from a server over ssh
 
-  kolonka open [--same | --host HOST] [--name N] [--ws W] [--no-select] [--here] [--] [CMD...]
+  kolonka open [--same | --host HOST] [--name N] [--ws W] [--no-select] [--no-rerun] [--here] [--] [CMD...]
         open a Kolonka tab connected to this server (--same, the default) or to HOST, running CMD
-        (a login shell without CMD); --here starts it in the current directory
+        (a login shell without CMD); --here starts it in the current directory.
+        One CMD argument is a shell command line (pipes, &&); several are a command and its
+        arguments, each quoted. --no-rerun: do not reconnect it when Kolonka starts
   kolonka status idle|active|blocked|done
         the status of this tab (blocked = needs you)
   kolonka notify TEXT... [--title T]
@@ -26,6 +28,18 @@ EOF
 die() { printf 'kolonka: %s\n' "$1" >&2; exit 2; }
 
 b64() { printf '%s' "$1" | base64 | tr -d '\r\n'; }
+
+# One word for the remote shell: in single quotes, with ' written as '\''.
+shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# The token of the Kolonka tab (LC_KOLONKA_TOKEN, sent with ssh's SendEnv). Under tmux the variable of
+# the pane can belong to an earlier client, so the one of the current client is asked first.
+token() {
+  if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
+    case "$(tmux show-environment LC_KOLONKA_TOKEN 2>/dev/null)" in LC_KOLONKA_TOKEN=?*) tmux show-environment LC_KOLONKA_TOKEN | sed 's/^LC_KOLONKA_TOKEN=//'; return ;; esac
+  fi
+  printf '%s' "${LC_KOLONKA_TOKEN:-}"
+}
 
 # Kolonka sets LC_TERMINAL in every tab; ssh passes it with SendEnv / AcceptEnv. Inside tmux the
 # variable of the pane can be stale, so the current client's one is asked too.
@@ -63,7 +77,7 @@ sub=$1; shift
 
 case "$sub" in
   open)
-    host=@same; name=; ws=; select=1; here=
+    host=@same; name=; ws=; select=1; here=; rerun=
     while [ $# -gt 0 ]; do
       case "$1" in
         --same) host=@same ;;
@@ -74,6 +88,7 @@ case "$sub" in
         --ws) [ $# -ge 2 ] || die '--ws needs a value'; ws=$2; shift ;;
         --ws=*) ws=${1#--ws=} ;;
         --no-select) select=0 ;;
+        --no-rerun) rerun=0 ;;
         --here) here=1 ;;
         --force) force=1 ;;
         --) shift; break ;;
@@ -83,15 +98,20 @@ case "$sub" in
       shift
     done
     case "$host" in ''|-*) die "not a valid host: $host" ;; esac
-    cmd="$*"
+    if [ $# -eq 1 ]; then
+      cmd=$1
+    else
+      cmd=
+      for a in "$@"; do cmd="${cmd:+$cmd }$(shq "$a")"; done
+    fi
     if [ -n "$here" ]; then
-      dir=$(printf '%s' "$PWD" | sed "s/'/'\\\\''/g")
-      if [ -n "$cmd" ]; then cmd="cd '$dir' && $cmd"; else cmd="cd '$dir' && exec \"\${SHELL:-sh}\" -l"; fi
+      if [ -n "$cmd" ]; then cmd="cd $(shq "$PWD") && $cmd"; else cmd="cd $(shq "$PWD") && exec \"\${SHELL:-sh}\" -l"; fi
     fi
     payload="open;host=$(b64 "$host");cmd=$(b64 "$cmd")"
     [ -n "$name" ] && payload="$payload;name=$(b64 "$name")"
     [ -n "$ws" ] && payload="$payload;ws=$(b64 "$ws")"
     payload="$payload;select=$select"
+    [ -n "$rerun" ] && payload="$payload;rerun=$rerun"
     ;;
   status)
     [ "${1:-}" = --force ] && { force=1; shift; }
@@ -123,4 +143,6 @@ case "$sub" in
 esac
 
 if [ -z "$force" ] && ! is_kolonka; then exit 3; fi
+tok=$(token)
+[ -n "$tok" ] && payload="$payload;token=$(b64 "$tok")"
 emit "$payload"

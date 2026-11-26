@@ -8,6 +8,7 @@ const { startApi } = require('./api');
 const { Dictation } = require('./dictation');
 const { Crash } = require('./crash');
 const { openableDir } = require('./paths');
+const { displayCmd } = require('./remote');
 const { publicSettings, settingsSecrets } = require('./settings-public');
 const { needsPrivateAcl, restrictToUser } = require('./acl');
 const { loadSettings } = require('./settings');
@@ -194,26 +195,42 @@ model.on('status', (s, status) => {
 model.on('log', (level, msg) => crash.log(level, msg));
 // a notification asked for by a program in a tab (OSC 7711 notify, OSC 9, OSC 777)
 model.on('notify', ({ title, text, session }) => notify({ title, text, session }));
-model.on('remote-notice', ({ reason, session, name, host }) => {
-  const key = { 'no-ssh': 'remote.noSsh', 'not-ssh': 'remote.notSsh', 'no-ssh-exe': 'remote.noSshExe' }[reason];
-  if (key) send('toast', { title: t('remote.refusedTitle'), text: t(key, { name, host: host || '' }), session });
+const REMOTE_NOTICES = {
+  'no-ssh': 'remote.noSsh', 'not-ssh': 'remote.notSsh', 'no-ssh-exe': 'remote.noSshExe',
+  'ssh-options': 'remote.sshOptions', 'too-many': 'remote.tooMany',
+};
+model.on('remote-notice', ({ reason, session, name, host, options }) => {
+  const key = REMOTE_NOTICES[reason];
+  if (key) {
+    send('toast', {
+      title: t('remote.refusedTitle'),
+      text: t(key, { name, host: host || '', options: (options || []).join(' '), max: model._remoteCfg().maxTabs }),
+      session,
+    });
+  }
 });
-model.askRemote = async ({ session, name, from, host, cmd, same }) => {
-  if (!win || win.isDestroyed()) return 'deny';
+// The permission dialog. The tab's name is shown only if the server did not set it; the command as it
+// will run (runs of spaces collapsed). "Always" only for a request with the tab's own token.
+model.askRemote = async ({ session, name, from, host, cmd, same, verified }) => {
+  if (!win || win.isDestroyed()) return 'none';
   if (!win.isFocused()) win.flashFrame(true);
+  const tab = name ? t('remote.tabNamed', { name, id: session }) : t('remote.tabUnnamed', { id: session });
+  const answers = verified ? ['once', 'always', 'deny', 'deny-tab'] : ['once', 'deny', 'deny-tab'];
+  const label = { once: t('remote.allowOnce'), always: t('remote.allowAlways'), deny: t('remote.deny'), 'deny-tab': t('remote.denyTab') };
+  const shown = displayCmd(cmd);
   const r = await dialog.showMessageBox(win, {
     type: 'warning',
     title: 'Kolonka',
-    buttons: [t('remote.allowOnce'), t('remote.allowAlways'), t('remote.deny')],
-    defaultId: 2,
-    cancelId: 2,
+    buttons: answers.map((a) => label[a]),
+    defaultId: answers.indexOf('deny'),
+    cancelId: answers.indexOf('deny'),
     noLink: true,
-    message: same || !from ? t('remote.askSame', { name, host }) : t('remote.askOther', { name, from, host }),
-    detail: cmd ? cmd : t('remote.askLogin'),
+    message: same || !from ? t('remote.askSame', { tab, host }) : t('remote.askOther', { tab, from, host }),
+    detail: (shown || t('remote.askLogin')) + (verified ? '' : '\n\n' + t('remote.unverified')),
   });
   win.flashFrame(false);
-  if (model.sessions.has(session) === false) return 'deny';
-  return ['once', 'always', 'deny'][r.response] || 'deny';
+  if (!model.sessions.has(session)) return 'none';
+  return answers[r.response] || 'deny';
 };
 
 const notifications = new Set();

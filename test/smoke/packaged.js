@@ -19,7 +19,7 @@ const CONTROL = path.join(DATA, 'control.json');
 const FAKE_SSH = path.join(DATA, 'fakessh', 'ssh.exe');
 const SETTINGS = {
   backgroundMaterial: 'none', dictation: { enabled: false }, defaultShell: 'cmd', apiPort: PORT,
-  remote: { allowHosts: ['myhost'], ssh: FAKE_SSH },
+  remote: { allowHosts: ['myhost:2222'], ssh: FAKE_SSH },
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -253,9 +253,10 @@ function openEvents() {
 //   - LC_TERMINAL=Kolonka is in the environment of a tab
 //   - OSC 7711 notify and OSC 9 printed in a tab come out as session.notify events
 //   - open from a local tab (nothing like ssh running in it) is refused
-//   - open @same from a tab running "ssh.exe -e 0 myhost" (a copy of node.exe under that name, which
-//     prints the request itself) opens a tab that starts remote.ssh with -t … -- myhost <cmd>;
-//     node then stops at "bad option: -t", which is enough to see the arguments arrived
+//   - open @same from a tab running "ssh.exe -p 2222 myhost" (a copy of node.exe under that name, which
+//     prints the request itself, with the tab's token from its environment) opens, without a question
+//     (myhost:2222 is allowed), a tab that starts remote.ssh with "-t" … "-p" "2222" "--" "myhost" <cmd>;
+//     node then stops at "bad option: -t", which is enough to see the quoted arguments arrived
 async function checkRemoteControl() {
   const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
   const events = openEvents();
@@ -283,10 +284,16 @@ async function checkRemoteControl() {
     fs.mkdirSync(path.dirname(FAKE_SSH), { recursive: true });
     fs.copyFileSync(process.execPath, FAKE_SSH);
     const script = path.join(DATA, 'fakessh', 'osc.js');
-    fs.writeFileSync(script, `process.stdout.write('\\x1b]7711;open;host=${b64('@same')};cmd=${b64('echo remote-ok')};name=${b64('from-ssh')}\\x07'); setTimeout(() => {}, 30000);\n`);
-    await cli('run', '-t', 'osc', '--', `$env:NODE_OPTIONS='--require ${script.replace(/\\/g, '/')}'; & '${FAKE_SSH}' -e 0 myhost`);
+    fs.writeFileSync(script, [
+      "const tok = Buffer.from(process.env.LC_KOLONKA_TOKEN || '').toString('base64');",
+      `process.stdout.write('\\x1b]7711;open;host=${b64('@same')};cmd=${b64('echo remote-ok')};name=${b64('from-ssh')};token=' + tok + '\\x07');`,
+      'setTimeout(() => {}, 30000);',
+      '',
+    ].join('\n'));
+    // node -p 2222 prints 2222; the required script keeps it alive and prints the request
+    await cli('run', '-t', 'osc', '--', `$env:NODE_OPTIONS='--require ${script.replace(/\\/g, '/')}'; & '${FAKE_SSH}' -p 2222 myhost`);
     const opened = await event('open @same from the ssh tab', (e) => e.type === 'remote.opened' && e.session === id);
-    if (opened.host !== 'myhost') throw new Error('open @same resolved to ' + JSON.stringify(opened));
+    if (opened.host !== 'myhost:2222' || !opened.verified || !opened.rerun) throw new Error('open @same resolved to ' + JSON.stringify(opened));
     const info = JSON.parse(await cli('info', '-t', opened.created));
     if (info.shell !== 'ssh' || info.name !== 'from-ssh' || !info.remote || info.remote.host !== 'myhost' || info.remote.cmd !== 'echo remote-ok' || !info.rerun) {
       throw new Error('unexpected tab opened over ssh: ' + JSON.stringify(info));

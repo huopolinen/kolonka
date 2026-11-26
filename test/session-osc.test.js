@@ -100,10 +100,23 @@ test('OSC 9: 9;9 is still the cwd, ConEmu 9;N is ignored, 9;<text> is a notifica
   ]);
 });
 
-test('every tab has LC_TERMINAL=Kolonka and LC_TERMINAL_VERSION', { skip }, (t) => {
-  const { pty } = make(t);
+test('every tab has LC_TERMINAL=Kolonka, LC_TERMINAL_VERSION and its own token, not shown in info', { skip }, (t) => {
+  const { s, pty } = make(t);
+  const other = make(t, { id: 's2' });
   assert.equal(pty.spawned.opts.env.LC_TERMINAL, 'Kolonka');
   assert.equal(pty.spawned.opts.env.LC_TERMINAL_VERSION, require('../package.json').version);
+  assert.match(pty.spawned.opts.env.LC_KOLONKA_TOKEN, /^[A-Za-z0-9_-]{24}$/);
+  assert.equal(pty.spawned.opts.env.LC_KOLONKA_TOKEN, s.token);
+  assert.notEqual(other.s.token, s.token);
+  assert.ok(!JSON.stringify(s.info()).includes(s.token));
+});
+
+test('a deferred tab is not started: no process, shown as exited, its screen can still be read', { skip }, async (t) => {
+  const { s, pty } = make(t, { deferred: true });
+  assert.equal(pty.spawned, null);
+  assert.equal(s.exited, true);
+  assert.equal(s.info().deferred, true);
+  assert.equal(await s.text(), '');
 });
 
 test('an ssh tab starts ssh.exe with its arguments and never types the command', { skip }, async (t) => {
@@ -113,6 +126,9 @@ test('an ssh tab starts ssh.exe with its arguments and never types the command',
   s.proc.write = (d) => written.push(d);
   await new Promise((r) => setTimeout(r, 450));
   assert.deepEqual(pty.spawned.args, ['-t', '--', 'myserver', 'htop']);
+  // with a command line Kolonka quoted itself, node-pty gets that string on Windows
+  const q = make(t, { id: 's3', ssh, runCommand: false, shell: { file: 'ssh.exe', args: ['-t', '@x'], commandLine: '"-t" "@x"', env: {} } });
+  assert.deepEqual(q.pty.spawned.args, process.platform === 'win32' ? '"-t" "@x"' : ['-t', '@x']);
   assert.deepEqual(written, []);
   assert.deepEqual(s.info().remote, { host: 'myserver', cmd: 'htop' });
   assert.equal(s.info().rerun, true);

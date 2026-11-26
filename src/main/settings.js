@@ -37,6 +37,7 @@ const DEFAULT_SETTINGS = {
     allowHosts: [],       // hosts that may open tabs without asking
     ssh: '',              // path to ssh.exe; empty = Windows OpenSSH, then Git for Windows
     fromLocalTabs: false, // let tabs that are not ssh sessions ask to open tabs too
+    maxTabs: 30,          // at most this many open tabs opened by servers
   },
 };
 

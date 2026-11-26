@@ -17,6 +17,11 @@ class FakeSession extends EventEmitter {
     this.command = opts.command || null;
     this.ssh = opts.ssh || null;
     this.rerun = !!opts.rerun;
+    this.fromRemote = !!opts.fromRemote;
+    this.remoteRoot = opts.remoteRoot || null;
+    this.nameFromServer = !!opts.nameFromServer;
+    this.deferred = false;
+    this.token = 'token-' + opts.id + '-' + Math.random().toString(36).slice(2);
     this.pid = FakeSession.nextPid++;
     this.status = 'idle';
     this.unread = false;
@@ -40,6 +45,7 @@ class FakeSession extends EventEmitter {
   start() {
     if (this.failStart) throw new Error('spawn failed');
     this.startedAt = Date.now();
+    if (this.opts.deferred) { this.deferred = true; this.exited = true; }
   }
   write(data) { if (!this.exited) this.written.push(data); }
   kill() { this.killed = true; this.exited = true; this.emit('killed'); }
@@ -61,7 +67,7 @@ class FakeSession extends EventEmitter {
       id: this.id, name: this.name, workspace: this.workspaceId, cwd: this.cwd, shell: this.shellKey,
       status: this.status, unread: this.unread, exited: this.exited, exitCode: this.exitCode,
       command: this.command, seq: this.seq,
-      remote: this.ssh ? { host: this.ssh.destination, cmd: this.ssh.cmd } : null, rerun: this.rerun,
+      remote: this.ssh ? { host: this.ssh.destination, cmd: this.ssh.cmd } : null, rerun: this.rerun, deferred: this.deferred,
     };
   }
 }

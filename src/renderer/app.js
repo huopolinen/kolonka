@@ -122,7 +122,8 @@ function markExited(x, code) {
   x.exited = true;
   // a tab opened over ssh: Enter connects again (the same ssh command)
   const sess = findSession(x.host.dataset.id);
-  const note = `\r\n\x1b[2m${t(sess && sess.remote ? 'term.exitedSsh' : 'term.exited', { code })}\x1b[0m\r\n`;
+  const key = sess && sess.deferred ? 'term.notConnected' : (sess && sess.remote ? 'term.exitedSsh' : 'term.exited');
+  const note = `\r\n\x1b[2m${t(key, { code })}\x1b[0m\r\n`;
   if (x.ready) x.term.write(note);
   else x.queue.push([note, Infinity]); // after the snapshot
 }
