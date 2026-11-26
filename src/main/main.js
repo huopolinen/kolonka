@@ -10,6 +10,7 @@ const { Crash } = require('./crash');
 const { openableDir } = require('./paths');
 const { publicSettings, settingsSecrets } = require('./settings-public');
 const { needsPrivateAcl, restrictToUser } = require('./acl');
+const { loadSettings } = require('./settings');
 const I18N = require('../shared/i18n');
 
 const pkg = require('../../package.json');
@@ -22,45 +23,15 @@ nativeTheme.themeSource = 'dark'; // dark Mica regardless of the Windows theme
 app.setAppUserModelId('dev.kolonka.terminal');
 const DATA_DIR = process.env.KOLONKA_DATA || path.join(app.getPath('appData'), 'Kolonka');
 fs.mkdirSync(DATA_DIR, { recursive: true });
+// An instance with its own data folder is a separate instance: the single-instance lock lives in
+// userData, so without this a second Kolonka with KOLONKA_DATA would just focus the first one and exit.
+if (process.env.KOLONKA_DATA) app.setPath('userData', path.join(DATA_DIR, 'chromium'));
 
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
-const DEFAULT_SETTINGS = {
-  language: 'en',
-  defaultShell: 'bash',
-  fontFamily: "'Cascadia Mono', 'JetBrains Mono', Consolas, monospace",
-  fontSize: 14,
-  lineHeight: 1.15,
-  cursorStyle: 'bar',
-  cursorBlink: true,
-  scrollback: 10000,
-  apiPort: 47811,
-  notifications: true,
-  closeOnExit: false,
-  backgroundMaterial: 'mica',
-  startDir: null,
-  sidebarWidth: 264,
-  dictation: {
-    enabled: true,
-    key: 'Space',
-    holdMs: 300,
-    engine: 'local',
-    language: 'auto',
-    device: '',
-    autoEnter: false,
-  },
-};
-
-function loadSettings() {
-  const file = path.join(DATA_DIR, 'settings.json');
-  let user = {};
-  try { user = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {
-    if (!fs.existsSync(file)) fs.writeFileSync(file, JSON.stringify(DEFAULT_SETTINGS, null, 2));
-  }
-  return Object.assign({}, DEFAULT_SETTINGS, user);
-}
-
-const settings = loadSettings();
+const loaded = loadSettings(path.join(DATA_DIR, 'settings.json'));
+const settings = loaded.settings;
+const settingsError = loaded.error; // shown in the window once it is up
 let lang = 'en';
 let t = I18N.make(lang);
 let win = null;
@@ -87,6 +58,7 @@ const crash = new Crash({
   beforeExit: () => { if (dictation) dictation.stopServer(); },
 });
 crash.start();
+if (settingsError) crash.log('error', 'settings.json could not be read, using the defaults: ' + settingsError);
 
 shells = detectShells(DATA_DIR);
 Object.assign(shells, settings.shells || {}); // user-defined shells from settings.json
@@ -145,6 +117,8 @@ function createWindow() {
     win.show();
     setTimeout(() => crash.checkPrevious().catch((e) => crash.log('error', e.stack)), 800);
   });
+  // Windows is logging off or shutting down: before-quit may never come, save now
+  win.on('session-end', () => { shutdown(); });
 
   const saveBounds = () => {
     if (!win || win.isDestroyed()) return;
@@ -210,6 +184,7 @@ model.on('status', (s, status) => {
   }
 });
 
+const notifications = new Set();
 function notify({ title, text, session, force }) {
   const s = session && model.sessions.get(session);
   const ttl = title || (s ? s.name : 'Kolonka');
@@ -217,7 +192,14 @@ function notify({ title, text, session, force }) {
   if (win && win.isFocused() && !force) { send('toast', { title: ttl, text, session }); return; }
   if (Notification.isSupported()) {
     const n = new Notification({ title: ttl, body: text || '', icon: fs.existsSync(ICON) ? nativeImage.createFromPath(ICON) : undefined });
-    n.on('click', () => { if (s && model.sessions.has(s.id)) model.selectSession(s.id); focusWindow(); });
+    // keep a reference until the notification is gone: a collected one never delivers its click
+    // (a timed-out toast still sits in the Action Center and can be clicked there; the oldest are dropped)
+    notifications.add(n);
+    if (notifications.size > 20) notifications.delete(notifications.values().next().value);
+    const forget = () => notifications.delete(n);
+    n.on('click', () => { forget(); if (s && model.sessions.has(s.id)) model.selectSession(s.id); focusWindow(); });
+    n.on('close', (_e, details) => { if (!details || details.reason !== 'timedOut') forget(); });
+    n.on('failed', forget);
     n.show();
   } else send('toast', { title: ttl, text, session });
 }
@@ -226,10 +208,11 @@ function notify({ title, text, session, force }) {
 ipcMain.handle('init', async () => ({
   state: model.tree(),
   settings: publicSettings(settings), // API keys stay in the main process
+  settingsError,
   lang,
   shells: Object.fromEntries(Object.entries(shells).map(([k, v]) => [k, { label: v.label }])),
   defaultShell: model.defaultShellKey(),
-  api: api ? { url: api.url, controlFile: api.controlFile } : null,
+  api: await apiForWindow(),
   version: pkg.version,
   platform: process.platform,
   dictation: dictation.publicConfig(),
@@ -244,7 +227,11 @@ ipcMain.handle('dictation:transcribe', async (_e, wav) => {
 });
 ipcMain.handle('snapshot', async (_e, id) => {
   const s = model.sessions.get(id);
-  return s ? s.snapshot() : null;
+  if (!s) return null;
+  // send the batched output first: every batch the window gets before the snapshot then has
+  // seq <= snapshot.seq and is dropped, every later one is newer — nothing is shown twice
+  flushData();
+  return s.snapshot();
 });
 ipcMain.on('pty:input', (_e, id, data) => { const s = model.sessions.get(id); if (s) s.write(data); });
 ipcMain.on('pty:resize', (_e, id, cols, rows) => {
@@ -305,15 +292,26 @@ ipcMain.handle('cmd', async (_e, name, args = {}) => {
 // ---------- lifecycle ----------
 app.on('second-instance', () => focusWindow());
 
+// The window does not depend on the API: it opens right away, and init waits for the API briefly.
+let apiStarting = null;
+async function apiForWindow() {
+  const a = api || await Promise.race([
+    (apiStarting || Promise.resolve(null)).catch(() => null),
+    new Promise((r) => setTimeout(() => r(null), 3000)),
+  ]);
+  return a ? { url: a.url, controlFile: a.controlFile } : null;
+}
+
 app.whenReady().then(async () => {
   lang = I18N.pickLang(settings.language, app.getPreferredSystemLanguages());
   t = I18N.make(lang);
   model.load();
+  createWindow();
   // hooks written by older versions call `node`, which fails on every Claude Code action without node in PATH
   if (app.isPackaged) { try { require(path.join(BIN_DIR, 'hooks.js')).migrate(); } catch (e) { crash.log('warn', 'hooks migrate: ' + e.message); } }
-  await protectControlFile();
   try {
-    api = await startApi({
+    // control.json is protected before the API writes the token into it
+    api = await (apiStarting = protectControlFile().then(() => startApi({
       model, dataDir: DATA_DIR, port: settings.apiPort,
       hooks: {
         version: pkg.version,
@@ -336,9 +334,8 @@ app.whenReady().then(async () => {
           else send('window:action', action);
         },
       },
-    });
-  } catch (e) { crash.log('error', 'API failed to start: ' + e.stack); }
-  createWindow();
+    })));
+  } catch (e) { crash.log('error', 'API failed to start: ' + (e && e.stack || e)); }
 });
 
 // control.json holds the API token. Outside the user profile (KOLONKA_DATA on a shared drive) it would
@@ -357,7 +354,7 @@ async function protectControlFile() {
 }
 
 let quitting = false;
-app.on('before-quit', () => {
+function shutdown() {
   if (quitting) return;
   quitting = true;
   model.shutdown();
@@ -365,7 +362,8 @@ app.on('before-quit', () => {
   if (api) { try { fs.unlinkSync(api.controlFile); } catch { /* ignore */ } }
   crash.log('info', 'quit');
   crash.cleanExit();
-});
+}
+app.on('before-quit', shutdown);
 app.on('window-all-closed', () => app.quit());
 
 function debounce(fn, ms) {

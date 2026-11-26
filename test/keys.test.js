@@ -51,3 +51,14 @@ test('an unknown key is a 400 error', () => {
   assert.throws(() => keyToSeq('hyper+q'), (e) => e instanceof ApiError && e.code === 400 && /unknown key/.test(e.message));
   assert.throws(() => keyToSeq('nosuchkey'), (e) => e instanceof ApiError && e.code === 400);
 });
+
+test('alt + a key that is not one character or a known name is a 400 error', () => {
+  for (const k of ['alt+ctrl+x', 'alt+nosuch', 'meta+shift+tab+x']) {
+    assert.throws(() => keyToSeq(k), (e) => e instanceof ApiError && e.code === 400, k);
+  }
+});
+
+test('alt + a character keeps its case', () => {
+  assert.equal(keyToSeq('alt+X'), '\x1bX');
+  assert.equal(keyToSeq('alt+tab'), '\x1b\t');
+});

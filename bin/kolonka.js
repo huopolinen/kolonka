@@ -24,9 +24,12 @@ Workspaces
   ws rm W [--force]                 delete (--force closes the sessions inside)
   ws fold W | ws unfold W           collapse / expand
 
+Options go before the text for new, type and run: everything from the first word of the
+command on is taken as is (kolonka run grep -h x types "grep -h x"). -- also starts it.
+
 Sessions
   new [--ws W] [--name N] [--cwd DIR] [--shell bash|pwsh|powershell|cmd]
-      [--after T] [--no-select] [-- COMMAND...]   create, prints the id
+      [--after T] [--no-select] [COMMAND...]      create, prints the id; Restart runs COMMAND again
   select [-t T]                     switch to it
   rename NAME [-t T]                rename
   mv --ws W [-t T] [--index N]      move to a workspace / position
@@ -36,12 +39,16 @@ Sessions
   status [idle|active|blocked|done] [-t T] [--quiet]   status glyph (no argument: print it)
 
 Input and output
-  type TEXT [-t T] [--enter]        type text (\\n → Enter)
-  run CMD... [-t T]                 same as type "CMD" --enter
-  keys KEY... [-t T]                keys: enter tab esc up down ctrl+c alt+x f5 …
+  type [-t T] [--enter] TEXT...     type text (\\n → Enter)
+  run [-t T] [--wait RE] CMD...     same as type --enter "CMD"; --wait RE waits for RE in the
+                                    output of this command (its echo line is skipped)
+  keys [-t T] KEY...                keys: enter tab esc up down ctrl+c alt+x f5 …
+      type, run and keys take --wait RE [--timeout MS], or --json to print {"seq": N}
   text [-t T] [--lines N] [--all]   read the screen (--all includes scrollback)
   wait [-t T] (--pattern RE [--screen] | --idle MS | --exit) [--timeout MS]
-                                    wait for a regex in new output / on screen, silence, or exit
+       [--since SEQ] [--skip-echo]  wait for a regex in new output / on screen, silence, or exit;
+                                    --since SEQ also searches output after SEQ (from type --json),
+                                    --skip-echo ignores its first line, --timeout 0 = no limit
   stream [-t T]                     raw session output (SSE) to stdout
   events                            event stream (created, status, exited…)
 
@@ -55,14 +62,20 @@ Other
 
 function die(msg, code = 1) { process.stderr.write('kolonka: ' + msg + '\n'); process.exit(code); }
 
+// Commands whose arguments are a command line or text to type: once their first argument starts,
+// everything after it is taken as is, so `kolonka run grep -h x` types `grep -h x`.
+const RAW_COMMANDS = ['run', 'type', 'new'];
+
 function parse(argv) {
   const pos = []; const opt = {}; let rest = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { rest = argv.slice(i + 1); break; }
+    const isOption = a.startsWith('--') || a === '-t' || a === '-n' || a === '-h';
+    if (pos.length === 1 && RAW_COMMANDS.includes(pos[0]) && !isOption) { rest = argv.slice(i); break; }
     if (a.startsWith('--')) {
       const [k, v] = a.slice(2).split(/=(.*)/s);
-      const flag = ['json', 'all', 'enter', 'no-select', 'force', 'quiet', 'screen', 'exit', 'help'].includes(k);
+      const flag = ['json', 'all', 'enter', 'no-select', 'force', 'quiet', 'screen', 'exit', 'help', 'skip-echo'].includes(k);
       if (v !== undefined) opt[k] = v;
       else if (flag) opt[k] = true;
       else opt[k] = argv[++i];
@@ -145,12 +158,40 @@ function printTree(t) {
   }
 }
 
+function toNumber(name, v) {
+  const n = Number(v);
+  if (v === true || v === undefined || String(v).trim() === '' || !Number.isFinite(n) || n < 0) die(`${name} needs a number, got "${v}"`);
+  return n;
+}
+
+// wait / run --wait: prints what matched (or the exit code); exit code 2 = timeout.
+async function waitCmd(opt, { target, pattern, since, skipEcho }) {
+  // --timeout 0 = no time limit
+  const body = { timeout: opt.timeout !== undefined ? toNumber('--timeout', opt.timeout) : 30000 };
+  if (pattern !== undefined) {
+    if (pattern === true || pattern === '') die('--pattern / --wait needs a regular expression');
+    body.pattern = pattern;
+  }
+  if (opt.screen) body.screen = true;
+  if (opt.idle !== undefined) body.idle = toNumber('--idle', opt.idle);
+  if (opt.exit) body.exit = true;
+  if (since !== undefined) body.since = since;
+  if (skipEcho) body.skipEcho = true;
+  if (!body.pattern && !body.idle && !body.exit) die('pass --pattern, --idle or --exit');
+  try {
+    const r = await request('POST', `/api/sessions/${target ? enc(target) : tgt(opt)}/wait`, body);
+    if (r.matched !== undefined) process.stdout.write(r.matched + '\n');
+    if (r.exitCode !== undefined) process.stdout.write(String(r.exitCode) + '\n');
+  } catch (e) { die(e.message, e.status === 408 ? 2 : 1); }
+}
+
 const hooks = require('./hooks');
 
 // ---------- main ----------
 async function main() {
   const { pos, opt, rest } = parse(process.argv.slice(2));
   const cmd = pos.shift();
+  const words = pos.concat(rest || []); // positional arguments, including those after --
   if (!cmd || opt.help || cmd === 'help') { process.stdout.write(HELP); return; }
   const json = (o) => process.stdout.write(JSON.stringify(o, null, 2) + '\n');
 
@@ -176,8 +217,7 @@ async function main() {
     }
     case 'new': {
       const body = { workspace: opt.ws, name: opt.name, cwd: opt.cwd ? path.resolve(opt.cwd) : undefined, shell: opt.shell, select: !opt['no-select'], after: opt.after };
-      if (rest && rest.length) body.command = rest.join(' ');
-      else if (pos.length) body.command = pos.join(' ');
+      if (words.length) body.command = words.join(' ');
       const r = await request('POST', '/api/sessions', body);
       return process.stdout.write(r.id + '\n');
     }
@@ -198,15 +238,20 @@ async function main() {
       try { await request('PATCH', `/api/sessions/${tgt(opt)}`, { status: pos[0] }, { quiet: opt.quiet }); } catch (e) { if (!opt.quiet) throw e; }
       return;
     }
-    case 'type': {
-      const text = unescape(pos.join(' '));
-      await request('POST', `/api/sessions/${tgt(opt)}/type`, { text, enter: !!opt.enter }); return;
+    case 'type': case 'run': case 'keys': {
+      const r = cmd === 'keys'
+        ? await request('POST', `/api/sessions/${tgt(opt)}/keys`, { keys: words })
+        : await request('POST', `/api/sessions/${tgt(opt)}/type`, cmd === 'run'
+          ? { text: words.join(' '), enter: true }
+          : { text: unescape(words.join(' ')), enter: !!opt.enter });
+      if (opt.wait !== undefined) {
+        // wait for output caused by this input only: since = the seq right before it.
+        // `run` skips the echo of the command line, so a pattern that also occurs in the command still works.
+        return waitCmd(opt, { target: r.session, since: r.seq, pattern: opt.wait, skipEcho: cmd === 'run' || !!opt['skip-echo'] });
+      }
+      if (opt.json) json(r);
+      return;
     }
-    case 'run': {
-      const text = (rest && rest.length ? rest : pos).join(' ');
-      await request('POST', `/api/sessions/${tgt(opt)}/type`, { text, enter: true }); return;
-    }
-    case 'keys': await request('POST', `/api/sessions/${tgt(opt)}/keys`, { keys: pos }); return;
     case 'text': {
       const q = new URLSearchParams();
       if (opt.lines) q.set('lines', opt.lines);
@@ -215,20 +260,11 @@ async function main() {
       if (opt.json) return json(r);
       return process.stdout.write(r.text + '\n');
     }
-    case 'wait': {
-      const body = { timeout: Number(opt.timeout || 30000) };
-      if (opt.pattern) body.pattern = opt.pattern;
-      if (opt.screen) body.screen = true;
-      if (opt.idle) body.idle = Number(opt.idle);
-      if (opt.exit) body.exit = true;
-      if (!body.pattern && !body.idle && !body.exit) die('pass --pattern, --idle or --exit');
-      try {
-        const r = await request('POST', `/api/sessions/${tgt(opt)}/wait`, body);
-        if (r.matched !== undefined) process.stdout.write(r.matched + '\n');
-        if (r.exitCode !== undefined) process.stdout.write(String(r.exitCode) + '\n');
-      } catch (e) { die(e.message, e.status === 408 ? 2 : 1); }
-      return;
-    }
+    case 'wait': return waitCmd(opt, {
+      pattern: opt.pattern,
+      since: opt.since !== undefined ? toNumber('--since', opt.since) : undefined,
+      skipEcho: !!opt['skip-echo'],
+    });
     case 'stream': return sse(`/api/sessions/${tgt(opt)}/stream`);
     case 'events': return sse('/api/events');
     case 'notify': await request('POST', '/api/notify', { text: pos.join(' '), title: opt.title, session: opt.target || process.env.KOLONKA_SESSION }); return;

@@ -17,7 +17,13 @@ function keyToSeq(k) {
   let m = /^(?:ctrl|c)[+-]([a-z@\[\\\]^_])$/.exec(key);
   if (m) return String.fromCharCode(m[1].toUpperCase().charCodeAt(0) & 0x1f);
   m = /^(?:alt|meta|m)[+-](.+)$/.exec(key);
-  if (m) return '\x1b' + (KEYS[m[1]] !== undefined ? KEYS[m[1]] : m[1]);
+  if (m) {
+    if (KEYS[m[1]] !== undefined) return '\x1b' + KEYS[m[1]];
+    // alt + one character keeps its case: alt+X is ESC X
+    if (m[1].length === 1) return '\x1b' + String(k).trim().slice(-1);
+    // anything else (alt+ctrl+x, alt+hyper+q) is not a key we know how to send
+    throw new ApiError(400, `unknown key: ${k}`);
+  }
   if (key.length === 1) return k;
   throw new ApiError(400, `unknown key: ${k}`);
 }

@@ -49,7 +49,7 @@ class Crash {
 
     app.on('render-process-gone', (_e, wc, details) => this.rendererGone(wc, details));
     app.on('child-process-gone', (_e, d) => this.log('error', `child process gone: ${d.type} ${d.reason} code=${d.exitCode} ${d.name || ''}`));
-    app.on('session-end', () => this.cleanExit());
+    // Windows logoff / shutdown arrives as BrowserWindow 'session-end' (app has no such event): see main.js
   }
 
   writeMarker(obj) { try { fs.writeFileSync(this.marker, JSON.stringify(obj)); } catch { /* ignore */ } }

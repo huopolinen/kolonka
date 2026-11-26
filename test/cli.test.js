@@ -55,3 +55,28 @@ test('running the CLI prints the help', () => {
   const out = execFileSync(process.execPath, [CLI, 'help'], { encoding: 'utf8' });
   assert.match(out, /^kolonka — control the Kolonka terminal/);
 });
+
+test('parse: run / type / new take everything after the first word of the command as is', () => {
+  assert.deepEqual(parse(['run', 'grep', '-h', 'x']), { pos: ['run'], opt: {}, rest: ['grep', '-h', 'x'] });
+  assert.deepEqual(parse(['run', '-t', 's3', '--wait', 'ok', 'npm', 'test', '--', '--watch']),
+    { pos: ['run'], opt: { target: 's3', wait: 'ok' }, rest: ['npm', 'test', '--', '--watch'] });
+  assert.deepEqual(parse(['type', '--enter', 'ls', '--all', '-t', 'x']), { pos: ['type'], opt: { enter: true }, rest: ['ls', '--all', '-t', 'x'] });
+  assert.deepEqual(parse(['new', '--name', 'srv', 'npm', 'run', 'dev', '--json']), { pos: ['new'], opt: { name: 'srv' }, rest: ['npm', 'run', 'dev', '--json'] });
+});
+
+test('parse: other commands still read options after positional arguments', () => {
+  assert.deepEqual(parse(['ws', 'rm', 'dev', '--force']), { pos: ['ws', 'rm', 'dev'], opt: { force: true }, rest: null });
+  assert.deepEqual(parse(['keys', 'ctrl+c', '-t', 's2']).opt, { target: 's2' });
+});
+
+test('running `run grep -h x` does not print the help', () => {
+  // no Kolonka is running in the test, so the command fails to connect, but it must not be -h
+  let out = '';
+  try {
+    out = execFileSync(process.execPath, [CLI, 'run', 'grep', '-h', 'x'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      env: Object.assign({}, process.env, { KOLONKA_DATA: path.join(__dirname, 'no-such-dir') }),
+    });
+  } catch (e) { out = String(e.stdout || ''); }
+  assert.doesNotMatch(out, /control the Kolonka terminal/);
+});
