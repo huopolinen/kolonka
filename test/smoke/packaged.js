@@ -30,8 +30,8 @@ let appExited = null; // promise resolved with the exit code
 let appOutput = '';
 
 // KOLONKA_NO_UPDATE: the packaged app must not ask GitHub for updates in a test (checked at the end)
-function env() {
-  const e = Object.assign({}, process.env, { KOLONKA_DATA: DATA, KOLONKA_NO_UPDATE: '1' });
+function env(data = DATA) {
+  const e = Object.assign({}, process.env, { KOLONKA_DATA: data, KOLONKA_NO_UPDATE: '1' });
   delete e.ELECTRON_RUN_AS_NODE;
   delete e.KOLONKA_SESSION;
   return e;
@@ -46,9 +46,12 @@ function startApp() {
 }
 
 // Run the CLI with plain node, the way scripts and agents call it.
-function cli(...args) {
+function cli(...args) { return cliIn(DATA, ...args); }
+
+// The same against the Kolonka that uses the data folder `data`.
+function cliIn(data, ...args) {
   return new Promise((resolve, reject) => {
-    execFile(process.execPath, [PACKAGED_CLI, ...args], { env: env(), timeout: 60000, windowsHide: true }, (err, stdout, stderr) => {
+    execFile(process.execPath, [PACKAGED_CLI, ...args], { env: env(data), timeout: 60000, windowsHide: true }, (err, stdout, stderr) => {
       log(`kolonka ${args.join(' ')} -> ${err ? 'exit ' + (err.code ?? err.signal) : 'ok'}`);
       if (err) { err.message = `kolonka ${args.join(' ')} failed: ${stderr || err.message}`; return reject(err); }
       resolve(stdout);
@@ -56,8 +59,8 @@ function cli(...args) {
   });
 }
 
-function api(method, url, body) {
-  const c = JSON.parse(fs.readFileSync(CONTROL, 'utf8'));
+function api(method, url, body, control = CONTROL) {
+  const c = JSON.parse(fs.readFileSync(control, 'utf8'));
   const data = body ? Buffer.from(JSON.stringify(body)) : null;
   return new Promise((resolve, reject) => {
     const req = http.request(c.url + url, {
@@ -142,6 +145,71 @@ async function main() {
   const mainLog = fs.readFileSync(path.join(DATA, 'logs', 'main.log'), 'utf8');
   if (!/updates: off \(env\)/.test(mainLog) || /update check|updater: Checking/.test(mainLog)) throw new Error('the updater was not off under KOLONKA_NO_UPDATE');
   log('updater: off, no update check');
+
+  await checkFirstRunInput();
+}
+
+// The very first start (an empty data folder) and a command typed into the first tab right away, the way a
+// script drives a freshly installed Kolonka: Git Bash must get every character of it. A fresh Git Bash tab
+// once lost the first character ("cho: command not found") or the whole command when the input came while
+// the shell was still starting and the window had not yet sized the tab. Each run uses a new data folder.
+const FIRST_RUNS = Number(process.env.KOLONKA_SMOKE_FIRST_RUNS) || 5;
+const FIRST_RUN_PORT = PORT + 1;
+const GIT_BASH = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe');
+
+async function checkFirstRunInput() {
+  if (!fs.existsSync(GIT_BASH)) { log(`first run: no Git Bash at ${GIT_BASH}, skipped`); return; }
+  const failed = [];
+  for (let i = 1; i <= FIRST_RUNS; i++) {
+    try { await firstRun(i); } catch (e) { failed.push(`run ${i}: ${e.message}`); }
+  }
+  if (failed.length) throw new Error(`first run: ${failed.length} of ${FIRST_RUNS} lost the typed command:\n  ${failed.join('\n  ')}`);
+  log(`first run: ${FIRST_RUNS} of ${FIRST_RUNS} got the command intact`);
+}
+
+async function firstRun(i) {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'kolonka-first-'));
+  const control = path.join(data, 'control.json');
+  fs.writeFileSync(path.join(data, 'settings.json'), JSON.stringify({ backgroundMaterial: 'none', dictation: { enabled: false }, apiPort: FIRST_RUN_PORT }));
+  const proc = spawn(EXE, [], { env: env(data), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
+  let output = '';
+  for (const s of [proc.stdout, proc.stderr]) s.on('data', (d) => { output += d; });
+  const exited = new Promise((resolve) => proc.on('exit', (code, signal) => resolve(code === null ? signal : code)));
+  proc.on('error', (e) => { output += `spawn error: ${e.message}\n`; });
+  const within = (ms) => Promise.race([exited.then(() => true), new Promise((r) => setTimeout(() => r(false), ms).unref())]);
+  let screen = '';
+  try {
+    await waitFor('control.json', 60000, async () => {
+      if (proc.exitCode !== null) throw new Error(`Kolonka exited early with code ${proc.exitCode}`);
+      try { const c = JSON.parse(fs.readFileSync(control, 'utf8')); return c && c.url && c.token ? c : null; } catch { return null; }
+    });
+    // exactly the calls of the run that failed: wait for a pause in the output, then run and wait for the result
+    await cliIn(data, 'wait', '-t', 's1', '--idle', '800');
+    const before = JSON.parse(await cliIn(data, 'info', '-t', 's1'));
+    if (before.shell !== 'bash') throw new Error(`the first tab is ${before.shell}, not Git Bash`);
+    let matched;
+    try {
+      matched = (await cliIn(data, 'run', '-t', 's1', '--wait', 'first-\\d', 'echo first-$((1+1))')).trim();
+    } finally {
+      screen = await cliIn(data, 'text', '-t', 's1').catch((e) => `(no screen: ${e.message})`);
+    }
+    const after = JSON.parse(await cliIn(data, 'info', '-t', 's1'));
+    log(`first run ${i}: ${before.cols}x${before.rows} when typed, ${after.cols}x${after.rows} after; matched "${matched}"`);
+    if (matched !== 'first-2') throw new Error(`run --wait printed "${matched}"`);
+    if (/command not found/.test(screen) || !screen.split(/\r?\n/).some((l) => l.trim() === 'first-2')) throw new Error('the command did not run as typed');
+  } catch (e) {
+    log(`first run ${i} FAILED: ${e.message}\n--- screen ---\n${screen.trimEnd()}`);
+    if (output.trim()) log('--- Kolonka stdout/stderr ---\n' + output.trimEnd());
+    try { log('--- logs/main.log ---\n' + fs.readFileSync(path.join(data, 'logs', 'main.log'), 'utf8').trimEnd()); } catch { /* none */ }
+    throw e;
+  } finally {
+    try { await api('POST', '/api/window', { action: 'quit' }, control); } catch { /* not up */ }
+    if (!(await within(20000))) {
+      await new Promise((resolve) => execFile('taskkill', ['/pid', String(proc.pid), '/T', '/F'], () => resolve()));
+      await within(5000);
+    }
+    fs.rmSync(data, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
 }
 
 // kolonka.cmd without node on PATH runs the CLI through the real Kolonka.exe: it must work and must not
