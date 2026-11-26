@@ -180,6 +180,7 @@ class Model extends EventEmitter {
     clearTimeout(this._saveTimer);
     this._saveTimer = null;
     this._saveFirstAt = 0;
+    if (this._shutDown) return; // the state saved at shutdown is the one the next start restores
     if (this._unreadable && !this._keepUnreadState()) return;
     try {
       const tmp = this.stateFile + '.tmp';
@@ -191,6 +192,7 @@ class Model extends EventEmitter {
   // Save 500 ms after the last change, but no later than SAVE_MAX_WAIT after the first unsaved one:
   // a stream of changes (cwd updates from a busy script) must not postpone the save forever.
   _scheduleSave() {
+    if (this._shutDown) return;
     const now = Date.now();
     if (!this._saveFirstAt) this._saveFirstAt = now;
     clearTimeout(this._saveTimer);
@@ -788,8 +790,11 @@ class Model extends EventEmitter {
     });
   }
 
+  // Quit or "Restart to update": save the tabs, then stop the shells. Nothing is saved after this: a killed
+  // shell that exits with 0 closes its tab under closeOnExit, and that must not reach the saved state.
   shutdown() {
     this.saveNow();
+    this._shutDown = true;
     for (const s of this.sessions.values()) s.kill();
   }
 }

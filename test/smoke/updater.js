@@ -197,8 +197,20 @@ function checkSurvivors(before, what) {
   assert.deepEqual(hooks(), before, `${what}: the Claude Code hooks are unchanged`);
   assert.ok(fs.existsSync(path.join(WHISPER, 'marker.txt')), `${what}: the voice files are kept`);
   const state = JSON.parse(fs.readFileSync(path.join(DATA, 'state.json'), 'utf8'));
-  const names = state.workspaces.flatMap((w) => w.sessions.map((s) => s.name));
+  const sessions = state.workspaces.flatMap((w) => w.sessions);
+  const names = sessions.map((s) => s.name);
   assert.ok(names.includes('keep'), `${what}: the saved tabs are kept (${names.join(', ')})`);
+  const again = sessions.find((s) => s.name === 'again');
+  assert.ok(again && again.rerun === true && again.command === RERUN_CMD, `${what}: the rerun tab is saved with its command (${JSON.stringify(again)})`);
+}
+
+// a tab marked rerun (like one a server opened over ssh) runs its command again when Kolonka starts
+const RERUN_CMD = 'echo kolonka-rerun-ok';
+async function rerunRan() {
+  return waitFor('the rerun tab to run its command again', 60000, async () => {
+    const r = await api('GET', '/api/sessions/again/text');
+    return r.text.split(/\r?\n/).some((l) => l.trim() === 'kolonka-rerun-ok');
+  });
 }
 
 async function main() {
@@ -248,6 +260,8 @@ async function main() {
     startApp();
     assert.equal((await apiVersion()).version, base.version);
     await api('POST', '/api/sessions', { name: 'keep', shell: 'cmd' });
+    await api('POST', '/api/sessions', { name: 'again', shell: 'cmd', command: RERUN_CMD, rerun: true });
+    await rerunRan();
     await waitReadyBar(next.version);
     await api('POST', '/api/window', { action: 'quit' });
     assert.equal(await Promise.race([childExit, sleep(30000).then(() => 'timeout')]), 0, 'Kolonka quits with code 0');
@@ -292,6 +306,8 @@ async function main() {
     assert.match(text, /isSilent: true, isForceRunAfter: true/);
     const tree2 = await api('GET', '/api/tree');
     assert.ok(tree2.workspaces.some((w) => w.sessions.some((s) => s.name === 'keep')), 'the tabs are back after the restart');
+    await rerunRan();
+    log('the rerun tab ran its command again after "Restart to update"');
     checkSurvivors(hooksBefore, 'restart to update');
 
     await api('POST', '/api/window', { action: 'quit' });
