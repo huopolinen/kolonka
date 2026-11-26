@@ -205,13 +205,13 @@ model.on('log', (level, msg) => crash.log(level, msg));
 model.on('notify', ({ title, text, session }) => notify({ title, text, session }));
 const REMOTE_NOTICES = {
   'no-ssh': 'remote.noSsh', 'not-ssh': 'remote.notSsh', 'no-ssh-exe': 'remote.noSshExe',
-  'ssh-options': 'remote.sshOptions', 'too-many': 'remote.tooMany',
+  'ssh-options': 'remote.sshOptions', 'too-many': 'remote.tooMany', malformed: 'remote.malformed',
 };
 model.on('remote-notice', ({ reason, session, name, host, options }) => {
   const key = REMOTE_NOTICES[reason];
   if (key) {
     send('toast', {
-      title: t('remote.refusedTitle'),
+      title: t(reason === 'malformed' ? 'remote.malformedTitle' : 'remote.refusedTitle'),
       text: t(key, { name, host: host || '', options: (options || []).join(' '), max: model._remoteCfg().maxTabs }),
       session,
     });

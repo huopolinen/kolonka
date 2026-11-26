@@ -50,6 +50,7 @@ class Model extends EventEmitter {
     this.firstRun = false;
     this._remoteLimit = new remote.RateLimiter(REMOTE_PER_MINUTE, 60000);
     this._remoteLogLimit = new remote.RateLimiter(REMOTE_LOG_PER_MINUTE, 60000);
+    this._malformedLimit = new remote.RateLimiter(1, 60000); // "ignored a malformed request" toasts per tab
     this._askChain = Promise.resolve();
     this.Session = Session || require('./session').Session;
     this.extraEnv = env || {};
@@ -406,7 +407,7 @@ class Model extends EventEmitter {
   createSession({ workspace, name, cwd, shell, command, select = true, after, rerun, ssh } = {}, internal = {}) {
     if (ssh !== undefined && ssh !== null) {
       ssh = remote.normalizeSsh(ssh, this._isAllowedSshExe);
-      if (!ssh) throw new ApiError(400, 'ssh: { destination, options, cmd } with a valid destination and only -p -l -i -J -4 -6');
+      if (!ssh) throw new ApiError(400, 'ssh: { destination, options, cmd } with a valid destination and only -p -l -i -J -4 -6 -o SendEnv=NAME');
     }
     let ws;
     if (workspace) ws = this.resolveWorkspace(workspace);
@@ -497,6 +498,7 @@ class Model extends EventEmitter {
       if (this.activeId) this.sessions.get(this.activeId).unread = false;
     }
     for (const k of ['open', 'notify', 'status', 'log']) { this._remoteLimit.forget(`${k}:${s.id}`); this._remoteLogLimit.forget(`${k}:${s.id}`); }
+    this._malformedLimit.forget('malformed:' + s.id);
     this.changed();
     this.emit('closed', s.id);
     this.event('session.closed', { session: s.id });
@@ -543,7 +545,16 @@ class Model extends EventEmitter {
   // One parsed request from session s. Returns a promise (open is asynchronous).
   async handleRemote(s, msg) {
     if (!msg) return;
-    if (msg.error) { this._remoteLog(s, 'info', `ignored a remote control sequence from ${s.id}: ${msg.error}`); return; }
+    if (msg.error) {
+      this._remoteLog(s, 'info', `ignored a remote control sequence from ${s.id}: ${msg.error}`);
+      // seen in the window too (once a minute per tab), so a script that speaks another format is not
+      // silently ignored
+      if (this._remoteCfg().enabled !== false && this._malformedLimit.take('malformed:' + s.id)) {
+        this.emit('remote-notice', { reason: 'malformed', session: s.id, name: s.name, host: null, options: null });
+      }
+      this.event('remote.ignored', { session: s.id, error: msg.error });
+      return;
+    }
     if (this._remoteCfg().enabled === false) return;
     const root = this._remoteRoot(s);
     switch (msg.action) {
@@ -613,7 +624,7 @@ class Model extends EventEmitter {
   // (_remoteOpen), exactly as after "Always".
   connectServer({ destination, options = [], cmd = '', name, workspace, open = true, select = true } = {}) {
     const ssh = remote.normalizeSsh({ destination, options, cmd: cmd || '' });
-    if (!ssh) throw new ApiError(400, 'connect: a valid ssh destination, options -p -l -i -J -4 -6 only, a one-line command');
+    if (!ssh) throw new ApiError(400, 'connect: a valid ssh destination, options -p -l -i -J -4 -6 -o SendEnv=NAME only, a one-line command');
     if (ssh.cmd && !open) throw new ApiError(400, 'connect: a command needs a tab (open)');
     const key = remote.destKey(ssh);
     this.allowRemoteHost(key);

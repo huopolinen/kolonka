@@ -97,7 +97,9 @@ function parseRemoteOsc(data) {
     const tok = token && token.length <= MAX_TOKEN ? { token } : {};
     switch (action) {
       case 'open': {
-        const host = dec('host');
+        // "@same" may come as it is: @ is not in the base64 alphabet, so it cannot be read two ways
+        // (a server script that sends host=@same literally would otherwise be ignored)
+        const host = f.host === SAME ? SAME : dec('host');
         if (!host) return { error: 'open needs host' };
         if (host !== SAME && !validHost(host)) return { error: 'open: host is not a valid ssh destination' };
         const cmd = dec('cmd') || '';
@@ -234,8 +236,22 @@ function sshCommandLine(exe, argv) {
 
 // Options of OpenSSH's getopt string that take an argument.
 const WITH_ARG = new Set('BbcDEeFIiJLlmOoPpQRSWw'.split(''));
-// The only options carried over to a new tab.
+// The only options carried over to a new tab (and -o SendEnv=…, see sendEnvOptions).
 const SAFE = new Set(['p', 'l', 'i', 'J', '4', '6']);
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_*]*$/;
+
+// The value of an -o that only names variables to send (SendEnv=A B, SendEnv A,B, sendenv=A; the option
+// name in any case) -> ['-o', 'SendEnv=A', '-o', 'SendEnv=B'], or null for any other -o. SendEnv does not
+// change where or how ssh connects, so a tab with it can be reproduced; "-NAME" (remove) and anything
+// that is not a plain name pattern is not taken.
+function sendEnvOptions(val) {
+  const m = /^\s*sendenv(?:\s*=\s*|\s+)(.*)$/i.exec(String(val || ''));
+  if (!m) return null;
+  const names = m[1].split(/[\s,]+/).filter(Boolean);
+  if (!names.length || names.length > 16 || !names.every((n) => n.length <= 64 && ENV_NAME_RE.test(n))) return null;
+  return names.flatMap((n) => ['-o', 'SendEnv=' + n]);
+}
+
 // Options that do not change where or how a connection goes: left out without a word. -A (the agent)
 // is left out too: a tab opened by a server does not get your agent.
 const HARMLESS = new Set(['v', 't', 'T', 'q', 'C', 'A']);
@@ -258,7 +274,8 @@ function parseSshArgs(argv) {
         if (WITH_ARG.has(f)) {
           let val = a.slice(j + 1);
           if (!val) { i++; val = argv[i]; if (val === undefined) return null; }
-          if (SAFE.has(f)) opts.push('-' + f, val); else dropped.push('-' + f);
+          const env = f === 'o' ? sendEnvOptions(val) : null;
+          if (env) opts.push(...env); else if (SAFE.has(f)) opts.push('-' + f, val); else dropped.push('-' + f);
           break;
         }
         if (SAFE.has(f)) opts.push('-' + f); else if (!HARMLESS.has(f)) dropped.push('-' + f);
@@ -291,7 +308,7 @@ function cleanOptions(opts) {
     const v = opts[i + 1];
     if (typeof v !== 'string' || !v || v.startsWith('-') || v.startsWith('@') || /[\x00-\x1f\x7f]/.test(v)) return null;
     i++;
-    if (o === '-p') { if (!/^\d{1,5}$/.test(v) || +v < 1 || +v > 65535) return null; out.push(o, v); } else if (o === '-l') { if (v.length > 64 || /\s/.test(v)) return null; out.push(o, v); } else if (o === '-J') { if (v.length > 512 || !/^[A-Za-z0-9._@:,%-]+$/.test(v)) return null; out.push(o, v); } else if (o === '-i') { if (v.length > 1024) return null; out.push(o, (/^\/[a-zA-Z](\/|$)/.test(v) && msysToWin(v)) || v); } else return null;
+    if (o === '-o') { if (!/^SendEnv=/.test(v) || !ENV_NAME_RE.test(v.slice(8)) || v.length > 72) return null; out.push(o, v); } else if (o === '-p') { if (!/^\d{1,5}$/.test(v) || +v < 1 || +v > 65535) return null; out.push(o, v); } else if (o === '-l') { if (v.length > 64 || /\s/.test(v)) return null; out.push(o, v); } else if (o === '-J') { if (v.length > 512 || !/^[A-Za-z0-9._@:,%-]+$/.test(v)) return null; out.push(o, v); } else if (o === '-i') { if (v.length > 1024) return null; out.push(o, (/^\/[a-zA-Z](\/|$)/.test(v) && msysToWin(v)) || v); } else return null;
   }
   return out;
 }
@@ -468,7 +485,7 @@ class RateLimiter {
 
 module.exports = {
   STATUSES, SAME, MAX_NAME, MAX_TEXT, MAX_TITLE, MAX_CMD,
-  b64decode, b64encode, sanitize, validHost, validCmd, displayCmd,
+  b64decode, b64encode, sanitize, sendEnvOptions, validHost, validCmd, displayCmd,
   parseRemoteOsc, notifyFromOsc9, notifyFromOsc777,
   newToken, tokenEquals,
   parseWinCommandLine, parseSshArgs, cleanOptions, normalizeSsh, buildSshArgs, destKey, destFields, sameDest, validKey, hostMatches,
