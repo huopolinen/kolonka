@@ -256,8 +256,9 @@ ipcMain.handle('cmd', async (_e, name, args = {}) => {
       case 'workspace.create': return model.createWorkspace(args).id;
       case 'workspace.update': model.updateWorkspace(args.id, args); return true;
       case 'workspace.delete': return model.deleteWorkspace(args.id, { force: true });
-      case 'clipboard.read': return clipboard.readText();
-      case 'clipboard.write': clipboard.writeText(String(args.text || '')); return true;
+      // asynchronous since Electron 44 (W3C-style clipboard API): await, so a failure reaches the catch below
+      case 'clipboard.read': return await clipboard.readText();
+      case 'clipboard.write': await clipboard.writeText(String(args.text || '')); return true;
       case 'hooks.status': return require(path.join(BIN_DIR, 'hooks.js')).installed();
       case 'hooks.install': {
         const hooks = require(path.join(BIN_DIR, 'hooks.js'));

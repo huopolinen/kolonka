@@ -36,8 +36,9 @@ jobs:
             ~\AppData\Local\electron-builder\Cache
           key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
-      # Node 22 ships npm 10, which runs install scripts: electron's postinstall downloads the binary,
-      # node-pty's picks its prebuilt addon. The next step fails loudly if either did not happen.
+      # Node 22 ships npm 10, which runs install scripts: node-pty's picks its prebuilt addon. Since Electron 42
+      # the electron package no longer downloads its binary on install (it does so on the first `npx electron`),
+      # and packaging does not need it: electron-builder fetches the Electron zip for the target itself.
       - name: Install dependencies
         run: |
           npm --version
@@ -47,12 +48,9 @@ jobs:
         shell: bash
         run: |
           node -e '
-            const fs = require("fs");
-            const exe = require("electron");
-            if (!fs.existsSync(exe)) throw new Error("electron binary is missing: " + exe);
-            console.log("electron:", exe);
             require("node-pty");
             console.log("node-pty: loads");
+            console.log("electron:", require("electron/package.json").version);
           '
 
       - name: Unit tests

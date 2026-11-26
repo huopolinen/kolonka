@@ -26,13 +26,12 @@
     "node-pty": "^1.1.0"
   },
   "allowScripts": {
-    "electron@39.8.10": true,
     "node-pty@1.1.0": true
   },
   "license": "MIT",
   "author": "huopolinen",
   "devDependencies": {
-    "electron": "^39.8.10",
+    "electron": "^45.5.0",
     "electron-builder": "^26.18.0"
   },
   "build": {
@@ -47,8 +46,15 @@
       "assets/**",
       "package.json",
       "!**/*.map",
-      "!node_modules/node-pty/{src,deps,scripts,third_party,binding.gyp}",
-      "!node_modules/node-pty/prebuilds/{darwin-*,win32-arm64}/**"
+      "!**/*.test.js",
+      "!**/*.pdb",
+      "!node_modules/node-pty/{src,deps,scripts,third_party,typings,binding.gyp}",
+      "!node_modules/node-pty/build/Release/conpty/**",
+      "!node_modules/node-pty/prebuilds/{darwin-*,win32-arm64}/**",
+      "!node_modules/node-pty/prebuilds/win32-x64/{conpty/**,pty.node,winpty.dll,winpty-agent.exe}",
+      "!node_modules/node-addon-api/**",
+      "!node_modules/@xterm/*/{src,typings}/**",
+      "!node_modules/@xterm/**/*.mjs"
     ],
     "extraResources": [
       {
@@ -60,6 +66,12 @@
       "node_modules/node-pty/**"
     ],
     "npmRebuild": false,
+    "publish": [
+      {
+        "provider": "github",
+        "releaseType": "draft"
+      }
+    ],
     "win": {
       "target": [
         "nsis"
