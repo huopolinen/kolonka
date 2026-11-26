@@ -285,7 +285,7 @@ function renderCrumbs() {
     <span class="chip cwd" title="${esc(s.cwd)}">${ICONS.folder}<span>${esc(shortPath(s.cwd))}</span></span>
     <span class="chip">${esc(S.shells[s.shell]?.label || s.shell)}</span>
     ${st}`;
-  c.querySelector('.cwd').addEventListener('dblclick', () => api.cmd('open.path', { path: s.cwd }));
+  c.querySelector('.cwd').addEventListener('dblclick', () => api.cmd('open.path', { id: s.id }));
   document.title = `${s.name} — Kolonka`;
 }
 
@@ -702,7 +702,7 @@ function sessMenu(s, at) {
   }
   items.push('-',
     { icon: ICONS.plus, label: t('menu.newNext'), run: () => newSession({ workspace: s.ws.id, cwd: s.cwd, shell: s.shell, after: s.id }) },
-    { icon: ICONS.open, label: t('menu.openFolder'), run: () => api.cmd('open.path', { path: s.cwd }) },
+    { icon: ICONS.open, label: t('menu.openFolder'), run: () => api.cmd('open.path', { id: s.id }) },
     { icon: ICONS.copy, label: t('menu.copyId'), hint: s.id, run: () => api.cmd('clipboard.write', { text: s.id }) },
     { icon: ICONS.restart, label: t('menu.restart'), run: () => restartSession(s.id) },
     '-',

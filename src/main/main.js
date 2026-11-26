@@ -7,6 +7,9 @@ const { detectShells } = require('./shells');
 const { startApi } = require('./api');
 const { Dictation } = require('./dictation');
 const { Crash } = require('./crash');
+const { openableDir } = require('./paths');
+const { publicSettings, settingsSecrets } = require('./settings-public');
+const { needsPrivateAcl, restrictToUser } = require('./acl');
 const I18N = require('../shared/i18n');
 
 const pkg = require('../../package.json');
@@ -78,6 +81,10 @@ const crash = new Crash({
     Dictation: dictation ? `${dictation.cfg.engine}${dictation.cfg.engine === 'local' ? '/' + dictation.build() : ''}` : '?',
     Material: settings.backgroundMaterial,
   }),
+  // literal secrets scrubbed from problem reports, whatever format they have
+  secrets: () => [api && api.token, ...settingsSecrets(settings), ...(dictation ? dictation.secrets() : [])],
+  // a fatal error can end the process with app.exit, which skips before-quit
+  beforeExit: () => { if (dictation) dictation.stopServer(); },
 });
 crash.start();
 
@@ -89,6 +96,10 @@ dictation = new Dictation({
   baseDir: path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'Kolonka', 'whisper'),
 });
 dictation.on('progress', (p) => send('dictation:progress', p));
+dictation.detectBuild(); // GPU probe in the background, off the IPC path
+dictation.killOrphan().then((k) => k && crash.log('info', 'stopped a whisper-server left from a previous run'), (e) => crash.log('warn', 'orphan check: ' + e.message));
+// last resort: the process is exiting without before-quit (app.exit, a fatal error)
+process.on('exit', () => { try { dictation.stopServer(); } catch { /* ignore */ } });
 let winState = {};
 const winStateFile = path.join(DATA_DIR, 'window.json');
 try { winState = JSON.parse(fs.readFileSync(winStateFile, 'utf8')); } catch { /* defaults */ }
@@ -154,7 +165,8 @@ function createWindow() {
   });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.on('before-input-event', (e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12' && input.control && input.shift) win.webContents.toggleDevTools();
+    // DevTools give full access to the renderer (and the clipboard); development builds only
+    if (input.type === 'keyDown' && input.key === 'F12' && input.control && input.shift && (!app.isPackaged || process.env.KOLONKA_DEBUG)) win.webContents.toggleDevTools();
   });
 }
 
@@ -213,7 +225,7 @@ function notify({ title, text, session, force }) {
 // ---------- IPC ----------
 ipcMain.handle('init', async () => ({
   state: model.tree(),
-  settings,
+  settings: publicSettings(settings), // API keys stay in the main process
   lang,
   shells: Object.fromEntries(Object.entries(shells).map(([k, v]) => [k, { label: v.label }])),
   defaultShell: model.defaultShellKey(),
@@ -271,7 +283,13 @@ ipcMain.handle('cmd', async (_e, name, args = {}) => {
       case 'open.settings': shell.openPath(path.join(DATA_DIR, 'settings.json')); return true;
       case 'open.data': shell.openPath(DATA_DIR); return true;
       case 'open.external': if (/^https?:\/\//.test(args.url)) shell.openExternal(args.url); return true;
-      case 'open.path': shell.openPath(args.path); return true;
+      case 'open.path': {
+        // by session id: the main process picks the folder, the renderer cannot name a file or a UNC path
+        const dir = openableDir(model, args.id);
+        if (!dir) return { error: 'not a local folder' };
+        shell.openPath(dir);
+        return true;
+      }
       case 'confirm': {
         const r = await dialog.showMessageBox(win, { type: 'question', buttons: [args.ok || t('btn.yes'), t('btn.cancel')], defaultId: 0, cancelId: 1, message: args.message, detail: args.detail });
         return r.response === 0;
@@ -291,6 +309,9 @@ app.whenReady().then(async () => {
   lang = I18N.pickLang(settings.language, app.getPreferredSystemLanguages());
   t = I18N.make(lang);
   model.load();
+  // hooks written by older versions call `node`, which fails on every Claude Code action without node in PATH
+  if (app.isPackaged) { try { require(path.join(BIN_DIR, 'hooks.js')).migrate(); } catch (e) { crash.log('warn', 'hooks migrate: ' + e.message); } }
+  await protectControlFile();
   try {
     api = await startApi({
       model, dataDir: DATA_DIR, port: settings.apiPort,
@@ -319,6 +340,21 @@ app.whenReady().then(async () => {
   } catch (e) { crash.log('error', 'API failed to start: ' + e.stack); }
   createWindow();
 });
+
+// control.json holds the API token. Outside the user profile (KOLONKA_DATA on a shared drive) it would
+// inherit a folder ACL other users can read, so it is created first and limited to the current user;
+// the API then overwrites it in place, which keeps that ACL.
+async function protectControlFile() {
+  if (!needsPrivateAcl(DATA_DIR, app.getPath('home'))) return;
+  const file = path.join(DATA_DIR, 'control.json');
+  try {
+    fs.writeFileSync(file, '{}');
+    await restrictToUser(file);
+    crash.log('info', 'control.json limited to the current user (data folder is outside the profile)');
+  } catch (e) {
+    crash.log('warn', `could not limit access to ${file}; other users of this folder may read the API token: ${e.message}`);
+  }
+}
 
 let quitting = false;
 app.on('before-quit', () => {

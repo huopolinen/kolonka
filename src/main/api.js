@@ -84,9 +84,10 @@ function startApi({ model, dataDir, port, hooks }) {
 
   async function handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
+    // header only: a token in the query string ends up in logs and shell history
     const auth = req.headers.authorization || '';
-    const given = auth.startsWith('Bearer ') ? auth.slice(7) : url.searchParams.get('token');
-    if (given !== token) return send(res, 401, { error: 'token required (Authorization: Bearer …), see control.json' });
+    const given = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    if (!tokenMatches(given, token)) return send(res, 401, { error: 'token required (Authorization: Bearer …), see control.json' });
     if (req.headers.origin) return send(res, 403, { error: 'browser requests are not allowed' });
 
     const q = Object.fromEntries(url.searchParams);
@@ -145,6 +146,15 @@ function startApi({ model, dataDir, port, hooks }) {
   });
 }
 
+// Constant-time comparison. Both sides are hashed first, so the lengths match and the length of the
+// real token does not leak either.
+function tokenMatches(given, token) {
+  if (typeof given !== 'string' || !given || !token) return false;
+  const a = crypto.createHash('sha256').update(given).digest();
+  const b = crypto.createHash('sha256').update(token).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let raw = '';
@@ -165,4 +175,4 @@ function send(res, code, obj) {
   res.end(body);
 }
 
-module.exports = { startApi, keyToSeq };
+module.exports = { startApi, keyToSeq, tokenMatches };

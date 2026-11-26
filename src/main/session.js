@@ -5,6 +5,7 @@ const pty = require('node-pty');
 const { Terminal } = require('@xterm/headless');
 const { SerializeAddon } = require('@xterm/addon-serialize');
 const { parseOsc7 } = require('./shells');
+const { isSafeLocalPath } = require('./paths');
 const { stripAnsi } = require('./ansi');
 
 class Session extends EventEmitter {
@@ -77,8 +78,10 @@ class Session extends EventEmitter {
     if (this.command) setTimeout(() => this.write(this.command + '\r'), 400);
   }
 
+  // Any program in the terminal can print OSC 7 / OSC 9;9, so the path is untrusted: local drive paths only.
   _setCwd(p) {
-    if (p && p !== this.cwd) { this.cwd = p; this.emit('meta'); }
+    if (!isSafeLocalPath(p)) return;
+    if (p !== this.cwd) { this.cwd = p; this.emit('meta'); }
   }
 
   _onData(data) {

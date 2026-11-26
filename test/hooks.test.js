@@ -19,7 +19,7 @@ function configDir(t) {
 }
 
 const read = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
-const ours = (h) => / status (active|blocked|done) --quiet$/.test(h.command) && /kolonka/.test(h.command);
+const ours = (h) => / status (active|blocked|done) --quiet/.test(h.command) && h.command.includes(hooks.MARK);
 
 const FOREIGN = {
   theme: 'dark',
@@ -58,7 +58,7 @@ test('install into a missing settings.json adds one hook per event', (t) => {
   for (const [ev, status] of Object.entries(hooks.EVENTS)) {
     const cmds = cfg.hooks[ev].flatMap((m) => m.hooks).map((h) => h.command);
     assert.equal(cmds.length, 1);
-    assert.match(cmds[0], new RegExp(` status ${status} --quiet$`));
+    assert.match(cmds[0], new RegExp(` status ${status} --quiet\\b`));
   }
   assert.equal(hooks.installed(), true);
 });
