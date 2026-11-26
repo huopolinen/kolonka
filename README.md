@@ -192,10 +192,40 @@ kolonka notify "deploy finished" --title myserver    # a notification; clicking 
 kolonka rename "build box"
 ```
 
+### Connect a server in one click
+
+For a team, the instructions are: **install Kolonka, ⚙ → Connect a server…, type the address of the server**. That's all on Windows; nobody edits `~/.ssh/config` or `settings.json` by hand.
+
+The address is what you would type after `ssh`: a name from your `~/.ssh/config` (`myserver`), a host name, `user@203.0.113.10`, `user@host:2222`, an IPv6 address (`2001:db8::1`, with a port `[2001:db8::1]:2222`). Before anything changes, the dialog shows the block it will add. On **Connect** Kolonka:
+
+- **adds a block to the end of `%USERPROFILE%\.ssh\config`** (the folder and the file are created if there are none), after keeping a copy of the old file as `config.bak-kolonka-<time>` next to it:
+  ```
+  # >>> kolonka: user@host:2222
+  Host host
+      SendEnv LC_TERMINAL LC_TERMINAL_VERSION KOLONKA_TOKEN
+  # <<< kolonka: user@host:2222
+  ```
+  A block of your own for that host keeps working as it is: `SendEnv` is the one ssh option that adds up over every block that applies (other options keep their first value), and a `Host` line ends whatever block came before it, a `Match` block included. `Host` is matched against the host name you type, never the user or the port, so the line has the host only (IPv6 without brackets); the port goes to ssh as `-p`. Connecting the same address again adds nothing. Kolonka changes only what is between its markers, keeps the file's line ends (CRLF or LF) and encoding (UTF-8 with or without a BOM; other bytes are written back as they were), and writes a new file next to it that then replaces the old one, so ssh never reads half a file. A file it creates, and the file it writes in place of yours, loses inherited permissions and keeps only your account (and SYSTEM and Administrators, where Windows puts them on every new file): OpenSSH for Windows refuses a config that anyone else may change ("Bad owner or permissions"). A config that is a link to another file, read-only or saved as UTF-16 is not touched; you get a message instead.
+- **trusts the server as if you had pressed *Always for this host*** (`state.json`, listed by `kolonka remote hosts`). The rule is the same as for *Always*: a request opens a tab without a question only with the token of the asking tab and only for that same server.
+- **opens a tab** `ssh -t <address>` (unless you untick *Open a tab now*) in the current workspace, started the way Kolonka starts every ssh tab, and reconnecting when Kolonka starts.
+
+**⚙ → Disconnect a server…** removes Kolonka's block (again with a copy of the old file) and the trust; open tabs stay.
+
+From the command line (also for scripts that set up a colleague's machine):
+
+```
+kolonka remote connect myserver [--name N] [--ws W] [--no-open] [--command 'htop']
+kolonka remote disconnect myserver
+```
+
+`--ws` takes a workspace by name, created if needed; `--command` runs on the server in the new tab. Without a running Kolonka the trust is saved for its next start and no tab is opened. An administrator can also hand out a shortcut to `Kolonka.exe --connect=myserver`: it opens the same dialog with the address filled in, and nothing changes until the user presses **Connect**.
+
+What is still needed on the server: the script (`kolonka remote install myserver`, step 1 below) and `AcceptEnv KOLONKA_TOKEN` in its sshd configuration (step 2).
+
 ### Setting it up
 
 1. **Install the script on the server**: `kolonka remote install myserver` (from a Kolonka tab on Windows) copies [`bin/kolonka-remote`](bin/kolonka-remote) to `~/.local/bin/kolonka` over ssh, asking before it overwrites a file there. It is a POSIX `sh` script that needs only `printf`, `sed` and `base64`; you can also copy it by hand.
-2. **Send Kolonka's variables over ssh — to that server only.** Every Kolonka tab has `LC_TERMINAL=Kolonka`, `LC_TERMINAL_VERSION=<version>` and `KOLONKA_TOKEN=<a random secret of this tab>` in its environment. The script does nothing (exit code 3) when `LC_TERMINAL` is not `Kolonka`, so it never prints junk into other terminals, and it sends the token along with every request (see [who may open tabs](#who-may-open-tabs)). The OpenSSH client of Windows sends none of them on its own; add a block **for each server you want this on** to `%USERPROFILE%\.ssh\config` — not `Host *`, which would hand the token to every server you connect to, git hosts included:
+2. **Send Kolonka's variables over ssh — to that server only.** Every Kolonka tab has `LC_TERMINAL=Kolonka`, `LC_TERMINAL_VERSION=<version>` and `KOLONKA_TOKEN=<a random secret of this tab>` in its environment. The script does nothing (exit code 3) when `LC_TERMINAL` is not `Kolonka`, so it never prints junk into other terminals, and it sends the token along with every request (see [who may open tabs](#who-may-open-tabs)). The OpenSSH client of Windows sends none of them on its own; **⚙ → Connect a server…** (or `kolonka remote connect myserver`, see [above](#connect-a-server-in-one-click)) adds the block for that server. By hand, add a block **for each server you want this on** to `%USERPROFILE%\.ssh\config` — not `Host *`, which would hand the token to every server you connect to, git hosts included:
    ```
    Host myserver
      SendEnv LC_TERMINAL LC_TERMINAL_VERSION KOLONKA_TOKEN
@@ -214,7 +244,7 @@ kolonka rename "build box"
 
 Kolonka builds the command itself — `ssh.exe -t -o SendEnv=LC_TERMINAL -o SendEnv=LC_TERMINAL_VERSION -o SendEnv=KOLONKA_TOKEN [options] -- <host> <command>` — and starts ssh.exe directly, without a shell, with every argument in double quotes, quoted for the parser of that ssh.exe (the C runtime for the OpenSSH client of Windows, the msys runtime for the one of Git for Windows, which would otherwise expand `@file`, `~`, `*` and `{a,b}` in unquoted arguments; `MSYS` and `CYGWIN` are removed from the environment of every ssh tab, so `MSYS=noglob` cannot change how it reads the quotes). Without an ssh.exe Kolonka may start, the tab is not started at all (no search on `PATH`). The command is one argument that only the shell on the server interprets.
 
-"The same server" is found this way: for a tab Kolonka opened over ssh, it is the connection Kolonka made. For a tab where you typed `ssh …` yourself (in Git Bash, PowerShell or cmd), Kolonka looks for the `ssh.exe` running under the tab's shell (through the Windows process list) and takes its destination and these options: `-p -l -i -J -4 -6`; `-v -t -T -q -C -A` are left out (a new tab never gets your agent). A connection that needs anything else (`-o`, `-F`, forwardings…) is **refused** rather than made without it — "can't reproduce this ssh connection": put such settings into `~/.ssh/config` for that host. If the tab is in a nested ssh (ssh from the server to another one), "same" still means the server the tab connected to.
+"The same server" is found this way: for a tab Kolonka opened over ssh, it is the connection Kolonka made. For a tab where you typed `ssh …` yourself (in Git Bash, PowerShell or cmd), Kolonka looks for the `ssh.exe` running under the tab's shell (through the Windows process list) and takes its destination and these options: `-p -l -i -J -4 -6`, and `-o SendEnv=…` (any case and form of the name, `-oSendEnv=A,B` or `-o "SendEnv A B"`; only plain variable names, one `-o SendEnv=NAME` per name in the new tab); `-v -t -T -q -C -A` are left out (a new tab never gets your agent). A connection that needs anything else (any other `-o`, `-F`, forwardings…) is **refused** rather than made without it — "can't reproduce this ssh connection": put such settings into `~/.ssh/config` for that host. If the tab is in a nested ssh (ssh from the server to another one), "same" still means the server the tab connected to.
 
 ssh.exe is the one the asking tab runs, if it is the OpenSSH client of Windows (`%SystemRoot%\System32\OpenSSH\ssh.exe`), the one of an installed Git for Windows (`…\Git\usr\bin\ssh.exe`) or `remote.ssh`; otherwise `remote.ssh`, then the Windows one, then Git's. Note that a new tab does not see the ssh-agent of a Git Bash session (`SSH_AUTH_SOCK`): use the *OpenSSH Authentication Agent* service of Windows, or keys without a passphrase prompt, or set `remote.ssh`.
 
@@ -247,7 +277,7 @@ The script writes to `/dev/tty`, which a hook has as long as Claude Code itself 
 
 ### The escape sequences
 
-For script authors: `ESC ] 7711 ; <action> ; key=value ; … BEL` (or `ESC \` instead of `BEL`). Values are standard base64 of UTF-8 (padding optional) except `select`, `rerun` and `state`; unknown keys are ignored. Every action takes `token=` (base64 of `$KOLONKA_TOKEN`); without it `open` always asks.
+For script authors: `ESC ] 7711 ; <action> ; key=value ; … BEL` (or `ESC \` instead of `BEL`). Values are standard base64 of UTF-8 (padding optional) except `select`, `rerun` and `state`; `host` may also be `@same` as it is (`@` is not a base64 character, so it cannot be read two ways). Unknown keys are ignored. A sequence Kolonka cannot read is noted in `logs\main.log` and, once a minute per tab, in the window (*Ignored a malformed Kolonka request from tab …*), so a script that speaks another format does not fail silently. Every action takes `token=` (base64 of `$KOLONKA_TOKEN`); without it `open` always asks.
 
 | Action | Fields |
 |---|---|

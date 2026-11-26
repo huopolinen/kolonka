@@ -66,8 +66,16 @@ Other
   hooks print --remote              the same hooks for Claude Code on a server (kolonka-remote)
 
 Remote control over ssh (README: "Remote control over SSH")
+  remote connect ADDRESS [--name N] [--ws W] [--no-open] [--command CMD]
+                                    connect a server in one step: Kolonka's variables go to it
+                                    (a block in %USERPROFILE%\\.ssh\\config, the old file kept as
+                                    config.bak-kolonka-<time>), its requests are trusted like
+                                    "Always for this host", and a tab connects to it (ssh -t ADDRESS
+                                    [CMD]). ADDRESS: an alias from ~/.ssh/config, host, user@host,
+                                    user@host:port, an IP address ([v6]:port with a port)
+  remote disconnect ADDRESS         remove that block and the trust (open tabs stay)
   remote install HOST [--yes]       put the kolonka-remote script on a server as ~/.local/bin/kolonka
-  remote hosts                      hosts that may open tabs without asking
+  remote hosts                      hosts that may open tabs without asking, and connected servers
   remote forget HOST                drop a host allowed with "Always for this host"
 `;
 
@@ -90,7 +98,7 @@ function parse(argv) {
     if (pos.length === 1 && RAW_COMMANDS.includes(pos[0]) && !isOption) { rest = argv.slice(i); break; }
     if (a.startsWith('--')) {
       const [k, v] = a.slice(2).split(/=(.*)/s);
-      const flag = ['json', 'all', 'enter', 'no-select', 'force', 'quiet', 'screen', 'exit', 'help', 'skip-echo', 'rerun', 'remote', 'yes'].includes(k);
+      const flag = ['json', 'all', 'enter', 'no-select', 'force', 'quiet', 'screen', 'exit', 'help', 'skip-echo', 'rerun', 'remote', 'yes', 'no-open'].includes(k);
       if (v !== undefined) opt[k] = v;
       else if (flag) opt[k] = true;
       else opt[k] = argv[++i];
@@ -323,16 +331,28 @@ async function main() {
         process.exitCode = require('./remote').install(pos[1], { yes: !!opt.yes });
         return;
       }
+      if (sub === 'connect' || sub === 'disconnect') {
+        if (!pos[1]) die(`remote ${sub} ADDRESS`);
+        const c = control();
+        const opts = { api: c ? request : null, dataDir: DATA_DIR };
+        process.exitCode = sub === 'connect'
+          ? await require('./remote').connect(pos[1], Object.assign(opts, { name: opt.name, ws: opt.ws, open: !opt['no-open'], command: opt.command }))
+          : await require('./remote').disconnect(pos[1], opts);
+        return;
+      }
       if (sub === 'hosts') {
         const r = await request('GET', '/api/remote');
-        if (opt.json) return json(r);
+        const sshconfig = require('./sshconfig');
+        const connected = sshconfig.readKeys(sshconfig.configFile());
+        if (opt.json) return json(Object.assign(r, { sshConfig: connected }));
         process.stdout.write(`remote control: ${r.enabled ? 'on' : 'off'}\n`);
         for (const h of r.allowHosts) process.stdout.write(`${h}\t(settings.json)\n`);
         for (const h of r.remembered) process.stdout.write(`${h}\t(always for this host)\n`);
+        for (const h of connected) process.stdout.write(`${h}\t(ssh config: sends Kolonka's variables)\n`);
         return;
       }
       if (sub === 'forget') { if (!pos[1]) die('remote forget HOST'); await request('DELETE', '/api/remote/hosts/' + enc(pos[1])); return; }
-      return die('remote install|hosts|forget');
+      return die('remote connect|disconnect|install|hosts|forget');
     }
     default: die(`unknown command: ${cmd}\n\n${HELP}`);
   }

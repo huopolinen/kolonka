@@ -8,7 +8,7 @@ const { startApi } = require('./api');
 const { Dictation } = require('./dictation');
 const { Crash } = require('./crash');
 const { openableDir } = require('./paths');
-const { displayCmd } = require('./remote');
+const { displayCmd, validKey } = require('./remote');
 const { publicSettings, settingsSecrets } = require('./settings-public');
 const { needsPrivateAcl, restrictToUser } = require('./acl');
 const { loadSettings } = require('./settings');
@@ -21,6 +21,8 @@ const pkg = require('../../package.json');
 const ROOT = path.join(__dirname, '..', '..');
 const ICON = path.join(ROOT, 'assets', 'icon.png');
 const BIN_DIR = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.join(ROOT, 'bin');
+// "Connect a server": the ssh config side, shared with the CLI (which runs under plain node, outside app.asar)
+const sshconfig = require(path.join(BIN_DIR, 'sshconfig.js'));
 
 app.setName('Kolonka');
 nativeTheme.themeSource = 'dark'; // dark Mica regardless of the Windows theme
@@ -203,13 +205,13 @@ model.on('log', (level, msg) => crash.log(level, msg));
 model.on('notify', ({ title, text, session }) => notify({ title, text, session }));
 const REMOTE_NOTICES = {
   'no-ssh': 'remote.noSsh', 'not-ssh': 'remote.notSsh', 'no-ssh-exe': 'remote.noSshExe',
-  'ssh-options': 'remote.sshOptions', 'too-many': 'remote.tooMany',
+  'ssh-options': 'remote.sshOptions', 'too-many': 'remote.tooMany', malformed: 'remote.malformed',
 };
 model.on('remote-notice', ({ reason, session, name, host, options }) => {
   const key = REMOTE_NOTICES[reason];
   if (key) {
     send('toast', {
-      title: t('remote.refusedTitle'),
+      title: t(reason === 'malformed' ? 'remote.malformedTitle' : 'remote.refusedTitle'),
       text: t(key, { name, host: host || '', options: (options || []).join(' '), max: model._remoteCfg().maxTabs }),
       session,
     });
@@ -272,6 +274,10 @@ ipcMain.handle('init', async () => ({
   platform: process.platform,
   dictation: dictation.publicConfig(),
   update: updater.state(),
+  // the empty screen and the first start offer "Connect a server…" while nothing is connected
+  firstRun: model.firstRun,
+  connected: connectedServers().length,
+  connect: connectArg(process.argv), // Kolonka.exe --connect=<address>: the dialog opens filled in
 }));
 ipcMain.on('log', (_e, level, msg) => crash.log(String(level || 'info'), String(msg || '').slice(0, 4000)));
 ipcMain.handle('dictation:warm', () => { dictation.warm(); return dictation.publicConfig(); });
@@ -337,6 +343,10 @@ ipcMain.handle('cmd', async (_e, name, args = {}) => {
         shell.openPath(dir);
         return true;
       }
+      case 'connect.preview': return connectPreview(args.address);
+      case 'connect.run': return await connectServer(args);
+      case 'connect.servers': return connectedServers();
+      case 'connect.disconnect': return await disconnectServer(args.key);
       case 'confirm': {
         const r = await dialog.showMessageBox(win, { type: 'question', buttons: [args.ok || t('btn.yes'), t('btn.cancel')], defaultId: 0, cancelId: 1, message: args.message, detail: args.detail });
         return r.response === 0;
@@ -349,8 +359,82 @@ ipcMain.handle('cmd', async (_e, name, args = {}) => {
   }
 });
 
+// ---------- connect a server (bin/sshconfig.js, model.connectServer) ----------
+// Kolonka.exe --connect=<address> (or --connect <address>): an administrator's shortcut for a colleague.
+// It only fills in the dialog; nothing changes until the user presses Connect in it. The = form is the
+// one to use: Chromium may move a separate value away from its switch in the second instance's argv.
+const connectArg = sshconfig.connectArg;
+
+const sameKey = (a, b) => a.toLowerCase() === b.toLowerCase();
+
+// Servers with Kolonka's block in the ssh config or trusted with "Always": [{ key, config, trusted }]
+function connectedServers() {
+  const inConfig = sshconfig.readKeys(sshconfig.configFile());
+  const keys = [...inConfig];
+  for (const k of model.remoteAllowed) if (!keys.some((x) => sameKey(x, k))) keys.push(k);
+  return keys.map((key) => ({ key, config: inConfig.some((x) => sameKey(x, key)), trusted: model.remoteAllowed.some((x) => sameKey(x, key)) }));
+}
+
+function configErrorText(e, file) {
+  const key = 'connect.cfg.' + e.code;
+  return I18N.D.en[key] ? t(key, { file: e.file || file }) : t('connect.cfgFailed', { file: e.file || file, msg: e.message });
+}
+
+// What the dialog shows under the address: the block that goes into the ssh config, or why the address is wrong.
+function connectPreview(address) {
+  const tg = sshconfig.parseTarget(address);
+  if (tg.error) return { invalid: t('connect.err.' + tg.error) };
+  const file = sshconfig.configFile();
+  return {
+    key: tg.key, file, block: sshconfig.blockLines(tg).join('\n'),
+    inConfig: sshconfig.readKeys(file).some((k) => sameKey(k, tg.key)), trusted: model.remoteHostAllowed(tg.key),
+  };
+}
+
+async function connectServer({ address, name, open }) {
+  const tg = sshconfig.parseTarget(address);
+  if (tg.error) return { error: t('connect.err.' + tg.error) };
+  const file = sshconfig.configFile();
+  let r;
+  try { r = await sshconfig.connectConfig(tg, { file }); } catch (e) {
+    crash.log('warn', `connect ${tg.key}: ${e.message}`);
+    return { error: configErrorText(e, file) };
+  }
+  crash.log('info', `connect ${tg.key}: ssh config ${r.changed ? 'changed' + (r.backup ? ', copy ' + path.basename(r.backup) : '') : 'already had the block'}`);
+  try {
+    const res = model.connectServer({ destination: tg.destination, options: tg.options, name, open: open !== false });
+    return { key: res.host, session: res.session, configChanged: r.changed, backup: r.backup ? path.basename(r.backup) : null, file };
+  } catch (e) {
+    return { error: t('connect.trustFailed', { key: tg.key, msg: e.message }) };
+  }
+}
+
+// key: as listed by connect.servers; a key remembered from a server's request that the address parser
+// would not take (it is stricter) is used as it is, if it is a valid key
+async function disconnectServer(raw) {
+  const tg = sshconfig.parseTarget(raw);
+  if (tg.error && !validKey(raw)) return { error: t('connect.err.' + tg.error) };
+  const key = tg.error ? raw : tg.key;
+  const file = sshconfig.configFile();
+  const r0 = await dialog.showMessageBox(win, {
+    type: 'question', buttons: [t('connect.btnDisconnect'), t('btn.cancel')], defaultId: 0, cancelId: 1,
+    message: t('connect.disconnectQ', { key }), detail: t('connect.disconnectDetail', { file }),
+  });
+  if (r0.response !== 0) return false;
+  let r;
+  try { r = await sshconfig.disconnectConfig(key, { file }); } catch (e) { return { error: configErrorText(e, file) }; }
+  const forgot = model.forgetRemoteHost(key);
+  if (forgot) model.saveNow();
+  crash.log('info', `disconnect ${key}: ssh config ${r.changed ? 'block removed' : 'had no block'}, trust ${forgot ? 'removed' : 'was not there'}`);
+  return { key, configChanged: r.changed, forgot, backup: r.backup ? path.basename(r.backup) : null };
+}
+
 // ---------- lifecycle ----------
-app.on('second-instance', () => focusWindow());
+app.on('second-instance', (_e, argv) => {
+  focusWindow();
+  const address = connectArg(argv || []);
+  if (address) send('window:action', { connect: address });
+});
 
 // The window does not depend on the API: it opens right away, and init waits for the API briefly.
 let apiStarting = null;

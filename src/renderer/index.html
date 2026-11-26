@@ -53,6 +53,7 @@
             <div class="empty-actions">
               <button class="btn primary" data-act="new-session" data-i18n="ui.newSession">New session</button>
               <button class="btn" data-act="new-ws" data-i18n="ui.newWorkspace">New workspace</button>
+              <button class="btn" data-act="connect" id="empty-connect" data-i18n="connect.menu" hidden>Connect a server…</button>
             </div>
             <div class="empty-keys">
               <span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd> <i data-i18n="ui.keySession">session</i></span>
@@ -79,6 +80,26 @@
       <div id="pal-list" role="listbox"></div>
       <div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> <i data-i18n="pal.kSelect">select</i></span><span><kbd>Enter</kbd> <i data-i18n="pal.kOpen">open</i></span><span><kbd>Esc</kbd> <i data-i18n="pal.kClose">close</i></span></div>
     </div>
+  </div>
+  <div id="connect" hidden>
+    <form class="dlg-box" id="connect-form" role="dialog" aria-labelledby="connect-title" autocomplete="off">
+      <div class="dlg-title" id="connect-title" data-i18n="connect.title">Connect a server</div>
+      <div class="dlg-sub" data-i18n="connect.sub"></div>
+      <label class="dlg-label" for="connect-addr" data-i18n="connect.address">Server address</label>
+      <input class="dlg-input" id="connect-addr" spellcheck="false" data-i18n-ph="connect.addressPh">
+      <div class="dlg-hint" id="connect-hint"></div>
+      <label class="dlg-label" for="connect-name" data-i18n="connect.name">Tab name</label>
+      <input class="dlg-input" id="connect-name" spellcheck="false" maxlength="80" data-i18n-ph="connect.namePh">
+      <label class="dlg-check"><input type="checkbox" id="connect-open" checked><span data-i18n="connect.openNow">Open a tab now</span></label>
+      <div class="dlg-preview" id="connect-preview" hidden>
+        <div class="dlg-preview-head" id="connect-preview-head"></div>
+        <pre id="connect-block"></pre>
+      </div>
+      <div class="dlg-actions">
+        <button type="button" class="btn" id="connect-cancel" data-i18n="btn.cancel">Cancel</button>
+        <button type="submit" class="btn primary" id="connect-ok" data-i18n="connect.ok">Connect</button>
+      </div>
+    </form>
   </div>
   <div id="menu" hidden></div>
   <div id="toasts"></div>

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Connect a server in one click.** ⚙ → **Connect a server…** (also in the command palette) asks for the address of a server and sets up remote control for it: Kolonka adds a block that sends its variables to that server to `%USERPROFILE%\.ssh\config` (keeping a copy of the old file), trusts the server as with *Always for this host* and opens a tab to it. **Disconnect a server…** undoes it. The same from the command line: `kolonka remote connect ADDRESS` / `kolonka remote disconnect ADDRESS`; `Kolonka.exe --connect=ADDRESS` opens the dialog filled in. A first start offers it next to *New session*.
+
+### Fixed
+
+- **Remote control:** `open` with `host=@same` written as it is (not in base64) is accepted; 0.2.0 ignored it. A tab where you typed `ssh -o SendEnv=…` can open tabs to the same server: the `SendEnv` options are carried over (any other `-o` is still refused). A request Kolonka cannot read now shows a note in the window (once a minute per tab) instead of only a line in the log.
+
 ## 0.2.0
 
 0.1.0 doesn't update itself — install 0.2.0 once manually; from 0.2.0 on updates arrive automatically. Your tabs, settings and voice files stay.

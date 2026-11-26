@@ -47,8 +47,10 @@ class Model extends EventEmitter {
     this._denyUntil = new WeakMap(); // session -> time until which its open requests are dropped
     this.askRemote = null;         // async ({ session, from, host, cmd }) -> 'once' | 'always' | 'deny'; set by the window
     this.remoteAllowed = [];       // hosts allowed with "Always for this host" (kept in state.json)
+    this.firstRun = false;
     this._remoteLimit = new remote.RateLimiter(REMOTE_PER_MINUTE, 60000);
     this._remoteLogLimit = new remote.RateLimiter(REMOTE_LOG_PER_MINUTE, 60000);
+    this._malformedLimit = new remote.RateLimiter(1, 60000); // "ignored a malformed request" toasts per tab
     this._askChain = Promise.resolve();
     this.Session = Session || require('./session').Session;
     this.extraEnv = env || {};
@@ -71,6 +73,7 @@ class Model extends EventEmitter {
   // ---------- persistence ----------
   load() {
     const st = this._readState();
+    this.firstRun = !st && !this._unreadable; // no state.json yet: the window offers "Connect a server…"
     const remembered = st && st.remote && Array.isArray(st.remote.allowedHosts) ? st.remote.allowedHosts : [];
     this.remoteAllowed = [...new Set(remembered.filter(remote.validKey))];
     // restore "rerun": every tab with a command runs it again; "fresh" (default): only tabs marked rerun
@@ -404,7 +407,7 @@ class Model extends EventEmitter {
   createSession({ workspace, name, cwd, shell, command, select = true, after, rerun, ssh } = {}, internal = {}) {
     if (ssh !== undefined && ssh !== null) {
       ssh = remote.normalizeSsh(ssh, this._isAllowedSshExe);
-      if (!ssh) throw new ApiError(400, 'ssh: { destination, options, cmd } with a valid destination and only -p -l -i -J -4 -6');
+      if (!ssh) throw new ApiError(400, 'ssh: { destination, options, cmd } with a valid destination and only -p -l -i -J -4 -6 -o SendEnv=NAME');
     }
     let ws;
     if (workspace) ws = this.resolveWorkspace(workspace);
@@ -495,6 +498,7 @@ class Model extends EventEmitter {
       if (this.activeId) this.sessions.get(this.activeId).unread = false;
     }
     for (const k of ['open', 'notify', 'status', 'log']) { this._remoteLimit.forget(`${k}:${s.id}`); this._remoteLogLimit.forget(`${k}:${s.id}`); }
+    this._malformedLimit.forget('malformed:' + s.id);
     this.changed();
     this.emit('closed', s.id);
     this.event('session.closed', { session: s.id });
@@ -541,7 +545,16 @@ class Model extends EventEmitter {
   // One parsed request from session s. Returns a promise (open is asynchronous).
   async handleRemote(s, msg) {
     if (!msg) return;
-    if (msg.error) { this._remoteLog(s, 'info', `ignored a remote control sequence from ${s.id}: ${msg.error}`); return; }
+    if (msg.error) {
+      this._remoteLog(s, 'info', `ignored a remote control sequence from ${s.id}: ${msg.error}`);
+      // seen in the window too (once a minute per tab), so a script that speaks another format is not
+      // silently ignored
+      if (this._remoteCfg().enabled !== false && this._malformedLimit.take('malformed:' + s.id)) {
+        this.emit('remote-notice', { reason: 'malformed', session: s.id, name: s.name, host: null, options: null });
+      }
+      this.event('remote.ignored', { session: s.id, error: msg.error });
+      return;
+    }
     if (this._remoteCfg().enabled === false) return;
     const root = this._remoteRoot(s);
     switch (msg.action) {
@@ -602,6 +615,30 @@ class Model extends EventEmitter {
     this.remoteAllowed = this.remoteAllowed.filter((h) => h.toLowerCase() !== String(key).toLowerCase());
     if (this.remoteAllowed.length !== before) this.changed();
     return before !== this.remoteAllowed.length;
+  }
+
+  // "Connect a server" (⚙ menu, `kolonka remote connect`): the user named the server, so it is trusted
+  // as if they had pressed "Always for this host", and a tab connects to it (rerun: it reconnects when
+  // Kolonka starts). The ssh config side is bin/sshconfig.js. This trusts the host and nothing more:
+  // a request opens a tab without a question only with the tab's own token and for that same host
+  // (_remoteOpen), exactly as after "Always".
+  connectServer({ destination, options = [], cmd = '', name, workspace, open = true, select = true } = {}) {
+    const ssh = remote.normalizeSsh({ destination, options, cmd: cmd || '' });
+    if (!ssh) throw new ApiError(400, 'connect: a valid ssh destination, options -p -l -i -J -4 -6 -o SendEnv=NAME only, a one-line command');
+    if (ssh.cmd && !open) throw new ApiError(400, 'connect: a command needs a tab (open)');
+    const key = remote.destKey(ssh);
+    this.allowRemoteHost(key);
+    if (!this.remoteHostAllowed(key)) throw new ApiError(500, `connect: ${key} could not be trusted`);
+    let created = null;
+    if (open) {
+      let ws;
+      if (workspace) ws = this.resolveWorkspace(workspace, { required: false }) || this.createWorkspace({ name: remote.sanitize(workspace, remote.MAX_NAME) });
+      created = this.createSession({ workspace: ws ? ws.id : undefined, name: remote.sanitize(name, remote.MAX_NAME), select, rerun: true, ssh });
+    }
+    this.saveNow(); // the trust is on disk before the caller reports it
+    this._log('info', `connected ${key}${created ? `: ${created.id}` : ''}`);
+    this.event('remote.connected', { host: key, session: created ? created.id : null });
+    return { host: key, session: created ? created.id : null };
   }
 
   // One permission dialog at a time. Every request is asked about, also one that waited behind an

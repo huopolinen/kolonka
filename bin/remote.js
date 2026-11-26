@@ -66,7 +66,8 @@ function nextSteps(host, onPath) {
     onPath ? '' : `~/.local/bin is not on PATH there: add  export PATH="$HOME/.local/bin:$PATH"  to ~/.profile (or ~/.bashrc).`,
     '',
     'For the server to know it talks to Kolonka (and to prove requests come from your tab), send Kolonka\'s',
-    'variables over ssh. In %USERPROFILE%\\.ssh\\config:',
+    `variables over ssh: run  kolonka remote connect ${host}  (or ⚙ → Connect a server… in Kolonka), which adds`,
+    'to %USERPROFILE%\\.ssh\\config:',
     '',
     `  Host ${host}`,
     '    SendEnv LC_TERMINAL LC_TERMINAL_VERSION KOLONKA_TOKEN',
@@ -84,4 +85,81 @@ function nextSteps(host, onPath) {
   ].filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n');
 }
 
-module.exports = { install, nextSteps, validHost, sshExe, CHECK, WRITE, SCRIPT, MARK };
+// ---------- `kolonka remote connect` / `disconnect` ----------
+// The ssh config is changed here, by the CLI (bin/sshconfig.js, the same code the window uses). The
+// trust ("Always for this host") belongs to the running Kolonka: it is added through the API, so the
+// app's own state.json is not overwritten under it. Without a running Kolonka it goes into state.json
+// directly, which the next start reads.
+
+const sshconfig = require('./sshconfig');
+
+// state.json: remote.allowedHosts with key added (add) or removed. A file that cannot be read as state
+// is not touched. -> true if it changed
+function trustInState(file, key, add) {
+  let st;
+  try { st = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {
+    if (e.code !== 'ENOENT') throw new Error(`${file} could not be read (${e.code || e.message}); not changed`);
+    if (!add) return false;
+    st = { version: 1, workspaces: [] }; // the first start builds the rest
+  }
+  if (!st || typeof st !== 'object' || !Array.isArray(st.workspaces)) throw new Error(`${file} is not a Kolonka state file; not changed`);
+  const list = st.remote && Array.isArray(st.remote.allowedHosts) ? st.remote.allowedHosts.filter((h) => typeof h === 'string') : [];
+  const has = list.some((h) => h.toLowerCase() === key.toLowerCase());
+  if (add === has) return false;
+  st.remote = Object.assign({}, st.remote, { allowedHosts: add ? list.concat(key) : list.filter((h) => h.toLowerCase() !== key.toLowerCase()) });
+  const tmp = file + '.kolonka-cli.tmp';
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(tmp, JSON.stringify(st, null, 2));
+  fs.renameSync(tmp, file);
+  return true;
+}
+
+function configLine(r, key) {
+  if (r.changed) return `ssh config: ${r.created ? 'created' : 'changed'} ${r.file} — Kolonka's variables go to ${key}${r.backup ? ` (copy of the old file: ${path.basename(r.backup)})` : ''}`;
+  return `ssh config: ${r.file} already sends Kolonka's variables to ${key}`;
+}
+
+// -> exit code. api: (method, url, body) -> Promise of the JSON answer of a running Kolonka, or null.
+async function connect(input, { name, ws, open = true, command, api = null, dataDir, home, out = process.stdout, err = process.stderr, editOpts = {} } = {}) {
+  const t = sshconfig.parseTarget(input);
+  if (t.error) { err.write(`kolonka: ${input || '(empty)'}: ${sshconfig.ERRORS[t.error]}\n`); return 2; }
+  if (command !== undefined && (command === true || !sshconfig.validCmd(command))) { err.write('kolonka: --command needs one line of text (at most 512 characters, no control characters)\n'); return 2; }
+  if (command && !open) { err.write('kolonka: --command runs in the tab; it cannot go with --no-open\n'); return 2; }
+  let r;
+  try { r = await sshconfig.connectConfig(t, Object.assign({ home }, editOpts)); } catch (e) { err.write(`kolonka: ${e.message}\nNothing changed.\n`); return 1; }
+  out.write(configLine(r, t.key) + '\n');
+  try {
+    if (api) {
+      const res = await api('POST', '/api/remote/connect', { destination: t.destination, options: t.options, cmd: command || '', name, workspace: ws, open });
+      out.write(`trusted: requests from ${res.host} with the token of its tab open tabs there without asking\n`);
+      if (res.session) out.write(`tab: ${res.session}\n`);
+    } else {
+      trustInState(path.join(dataDir, 'state.json'), t.key, true);
+      out.write(`trusted: requests from ${t.key} with the token of its tab open tabs there without asking (saved for the next start)\n`);
+      if (open) out.write('Kolonka is not running, so no tab was opened.\n');
+    }
+  } catch (e) {
+    err.write(`kolonka: ${t.key} was not added to the trusted hosts: ${e.message}\n(the ssh config change above stays; run the command again to retry)\n`);
+    return 1;
+  }
+  return 0;
+}
+
+async function disconnect(input, { api = null, dataDir, home, out = process.stdout, err = process.stderr, editOpts = {} } = {}) {
+  const t = sshconfig.parseTarget(input);
+  if (t.error) { err.write(`kolonka: ${input || '(empty)'}: ${sshconfig.ERRORS[t.error]}\n`); return 2; }
+  let r;
+  try { r = await sshconfig.disconnectConfig(t.key, Object.assign({ home }, editOpts)); } catch (e) { err.write(`kolonka: ${e.message}\nNothing changed.\n`); return 1; }
+  out.write(r.changed ? `ssh config: removed Kolonka's block for ${t.key} from ${r.file}${r.backup ? ` (copy of the old file: ${path.basename(r.backup)})` : ''}\n`
+    : `ssh config: no block of Kolonka for ${t.key}\n`);
+  let forgot;
+  try {
+    if (api) {
+      try { await api('DELETE', '/api/remote/hosts/' + encodeURIComponent(t.key)); forgot = true; } catch (e) { if (e.status !== 404) throw e; forgot = false; }
+    } else forgot = trustInState(path.join(dataDir, 'state.json'), t.key, false);
+  } catch (e) { err.write(`kolonka: ${t.key} is still trusted: ${e.message}\n`); return 1; }
+  out.write(forgot ? `trusted hosts: ${t.key} removed\n` : `trusted hosts: ${t.key} was not there\n`);
+  return r.changed || forgot ? 0 : 1;
+}
+
+module.exports = { install, nextSteps, validHost, sshExe, CHECK, WRITE, SCRIPT, MARK, connect, disconnect, trustInState };

@@ -98,6 +98,12 @@ function startApi({ model, dataDir, port, hooks }) {
     const cfg = model._remoteCfg();
     return { enabled: cfg.enabled !== false, allowHosts: cfg.allowHosts || [], remembered: model.remoteAllowed.slice() };
   });
+  // `kolonka remote connect`: trust the server (as "Always for this host") and open a tab to it; the
+  // CLI has changed the ssh config itself
+  route('POST', '/api/remote/connect', ({ body }) => model.connectServer({
+    destination: body.destination, options: body.options, cmd: body.cmd, name: body.name, workspace: body.workspace,
+    open: body.open !== false, select: body.select !== false,
+  }));
   route('DELETE', '/api/remote/hosts/:h', ({ p }) => {
     if (!model.forgetRemoteHost(p.h)) throw new ApiError(404, `not a remembered host: ${p.h}`);
     return { ok: true };
