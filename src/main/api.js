@@ -14,6 +14,10 @@ function startApi({ model, dataDir, port, hooks }) {
   model.on('event', (ev) => {
     const line = `event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`;
     for (const c of sse) if (c.kind === 'events') c.res.write(line);
+    // a closed session's output stream ends (a restarted one keeps streaming under the same id)
+    if (ev.type === 'session.closed') {
+      for (const c of [...sse]) if (c.kind === 'stream' && c.id === ev.session) { sse.delete(c); c.close(); }
+    }
   });
   model.on('data', (id, data) => {
     for (const c of sse) if (c.kind === 'stream' && c.id === id) c.res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -54,24 +58,30 @@ function startApi({ model, dataDir, port, hooks }) {
   route('DELETE', '/api/sessions/:s', ({ p }) => model.closeSession(p.s));
   route('POST', '/api/sessions/:s/select', ({ p }) => { const s = model.selectSession(p.s); hooks.focus(); return sinfo(s); });
   route('POST', '/api/sessions/:s/restart', ({ p }) => sinfo(model.restartSession(p.s)));
+  // seq: the last output seq before the input; pass it to wait as `since` to see all the output it caused
   route('POST', '/api/sessions/:s/type', ({ p, body }) => {
     let text = String(body.text ?? '');
     if (body.enter) text += '\r';
     text = text.replace(/\r?\n/g, '\r');
-    model.type(p.s, text);
-    return { ok: true, bytes: text.length };
+    const s = model.type(p.s, text);
+    return { ok: true, bytes: text.length, session: s.id, seq: s.seq };
   });
   route('POST', '/api/sessions/:s/keys', ({ p, body }) => {
     const keys = Array.isArray(body.keys) ? body.keys : [body.keys];
-    model.type(p.s, keys.map(keyToSeq).join(''));
-    return { ok: true };
+    const s = model.type(p.s, keys.map(keyToSeq).join(''));
+    return { ok: true, session: s.id, seq: s.seq };
   });
   route('GET', '/api/sessions/:s/text', async ({ p, q }) => {
     const s = model.resolveSession(p.s);
     const text = await s.text({ lines: q.lines ? Number(q.lines) : undefined, all: q.all === '1' || q.all === 'true' });
     return { id: s.id, text, cursor: s.cursor(), cols: s.cols, rows: s.rows };
   });
-  route('POST', '/api/sessions/:s/wait', ({ p, body }) => model.wait(p.s, body));
+  route('POST', '/api/sessions/:s/wait', ({ p, body, res }) => {
+    // the client gave up (Ctrl+C, its own timeout): drop the wait and its listeners
+    const ac = new AbortController();
+    res.on('close', () => { if (!res.writableFinished) ac.abort(); });
+    return model.wait(p.s, Object.assign({}, body, { signal: ac.signal }));
+  });
   route('POST', '/api/notify', ({ body }) => {
     let s = null;
     if (body.session) s = model.resolveSession(body.session);
@@ -106,7 +116,7 @@ function startApi({ model, dataDir, port, hooks }) {
       const p = {};
       r.keys.forEach((k, i) => { p[k] = decodeURIComponent(mm[i + 1]); });
       const body = ['POST', 'PATCH', 'PUT'].includes(req.method) ? await readJson(req) : {};
-      const result = await r.fn({ p, q, body, req });
+      const result = await r.fn({ p, q, body, req, res });
       return send(res, 200, result);
     }
     send(res, 404, { error: `no such endpoint: ${req.method} ${url.pathname}` });
@@ -118,31 +128,43 @@ function startApi({ model, dataDir, port, hooks }) {
     const client = Object.assign({ res }, c);
     sse.add(client);
     const ping = setInterval(() => res.write(': ping\n\n'), 20000);
+    client.close = () => { clearInterval(ping); res.end(); };
     req.on('close', () => { clearInterval(ping); sse.delete(client); });
   }
 
   const server = http.createServer((req, res) => {
     handle(req, res).catch((e) => {
-      const code = e instanceof ApiError ? e.code : (e instanceof SyntaxError ? 400 : 500);
+      // URIError: a malformed %-escape in the path
+      const code = e instanceof ApiError ? e.code : (e instanceof SyntaxError || e instanceof URIError ? 400 : 500);
       send(res, code, { error: e.message });
     });
   });
 
+  // Any failure on the configured port (busy, forbidden, invalid) falls back to a random one;
+  // if that fails too the promise rejects, so the caller is never left waiting.
   const controlFile = path.join(dataDir, 'control.json');
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const listen = (p) => {
-      server.once('error', (e) => {
-        if (e.code === 'EADDRINUSE' && p !== 0) listen(0);
-        else console.error('api error', e);
-      });
-      server.listen(p, '127.0.0.1', () => {
-        const actual = server.address().port;
-        const info = { url: `http://127.0.0.1:${actual}`, port: actual, token, pid: process.pid };
-        fs.writeFileSync(controlFile, JSON.stringify(info, null, 2));
-        resolve(Object.assign({ server, controlFile }, info));
-      });
+      const onError = (e) => {
+        server.off('listening', onListening);
+        if (p !== 0) { console.error(`api: port ${p} failed (${e.code || e.message}), using a random port`); listen(0); } else reject(e);
+      };
+      const onListening = () => {
+        server.off('error', onError);
+        server.on('error', (e) => console.error('api error', e));
+        try {
+          const actual = server.address().port;
+          const info = { url: `http://127.0.0.1:${actual}`, port: actual, token, pid: process.pid };
+          fs.writeFileSync(controlFile, JSON.stringify(info, null, 2));
+          resolve(Object.assign({ server, controlFile }, info));
+        } catch (e) { server.close(); reject(e); }
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      try { server.listen(p, '127.0.0.1'); } catch (e) { onError(e); }
     };
-    listen(port);
+    const want = Number(port);
+    listen(Number.isInteger(want) && want >= 0 && want < 65536 ? want : 0);
   });
 }
 

@@ -16,6 +16,8 @@ window.Dictation = (() => {
   let level = 0;
   let mic = null; // { stream, ctx, node }
   let micIdleTimer = null;
+  let micOpening = null; // the pending openMic()
+  let attempts = 0;      // presses that reached 'starting'; only the latest one may go on to listening
   let tick = null;
   let el = null;
 
@@ -46,14 +48,25 @@ window.Dictation = (() => {
     return off; // true = now enabled
   }
 
+  // The modifier flags a modifier key sets on its own events; they do not count as "with a modifier"
+  // when that key is the dictation key. AltRight is AltGr on many layouts: Ctrl+Alt.
+  const OWN_MODS = {
+    ControlLeft: ['ctrlKey'], ControlRight: ['ctrlKey'], ShiftLeft: ['shiftKey'], ShiftRight: ['shiftKey'],
+    AltLeft: ['altKey'], AltRight: ['altKey', 'ctrlKey'], MetaLeft: ['metaKey'], MetaRight: ['metaKey'],
+  };
+
   // Called from the terminal key handler. Returns true when the event is consumed.
   function handleKey(e, sess) {
+    if (e.isComposing || e.keyCode === 229) return false; // an IME is composing
     if (!enabled() || e.code !== cfg.key) {
       // another key while Space is down but before the threshold: this is just typing
       if (state === 'pending' && e.type === 'keydown') flushTap();
       return false;
     }
-    const mods = e.ctrlKey || e.altKey || e.metaKey || e.shiftKey;
+    // busy downloading or transcribing: the key does its normal job (Space types a space)
+    if (state === 'installing' || state === 'processing') return false;
+    const own = OWN_MODS[cfg.key] || [];
+    const mods = ['ctrlKey', 'altKey', 'metaKey', 'shiftKey'].some((m) => e[m] && !own.includes(m));
     if (e.type === 'keydown') {
       if (mods && state === 'idle') return false;
       if (e.repeat || state !== 'idle') return state !== 'idle' || e.repeat;
@@ -97,17 +110,20 @@ window.Dictation = (() => {
       return;
     }
     state = 'starting';
+    const attempt = ++attempts;
     api.dictation.warm();
     show('starting', t('dict.mic'));
     try {
       await openMic();
     } catch (err) {
+      if (attempt !== attempts) return; // a newer press owns the state
       state = 'idle';
       hide();
       Dictation.hooks.toast(t('dict.noMic'), t('dict.noMicDetail') + (err.message || ''));
       return;
     }
-    if (state !== 'starting') return; // released while the microphone was opening
+    // released while the microphone was opening (or a newer press took over): it must not stay open
+    if (state !== 'starting' || attempt !== attempts) { scheduleMicClose(); return; }
     chunks = []; peak = 0; level = 0;
     startedAt = performance.now();
     state = 'listening';
@@ -125,7 +141,7 @@ window.Dictation = (() => {
     scheduleMicClose();
     if (dur < 0.35 || peak < 0.015) { state = 'idle'; flash(t('dict.silence')); return; }
     show('processing', t('dict.processing'));
-    const wav = encodeWav(data, mic.ctx.sampleRate);
+    const wav = encodeWav(data, mic ? mic.ctx.sampleRate : 16000);
     const r = await api.dictation.transcribe(wav);
     state = 'idle';
     if (r.error) { hide(); Dictation.hooks.toast(t('dict.title'), r.error); return; }
@@ -137,9 +153,26 @@ window.Dictation = (() => {
   }
 
   // ---------- microphone ----------
-  async function openMic() {
+  // A microphone that was unplugged or taken away ends its track: reopen it then.
+  function micAlive() {
+    return !!mic && mic.ctx.state !== 'closed' && mic.stream.getAudioTracks().some((tr) => tr.readyState === 'live');
+  }
+  function closeMic() {
+    if (!mic) return;
+    const m = mic;
+    mic = null;
+    try { m.stream.getTracks().forEach((tr) => tr.stop()); } catch { /* ignore */ }
+    try { m.ctx.close(); } catch { /* ignore */ }
+  }
+  // One opening at a time: a second press while getUserMedia is pending waits for the same one.
+  function openMic() {
     clearTimeout(micIdleTimer);
-    if (mic) return;
+    if (mic && micAlive()) return Promise.resolve();
+    closeMic();
+    if (!micOpening) micOpening = doOpenMic().finally(() => { micOpening = null; });
+    return micOpening;
+  }
+  async function doOpenMic() {
     const audio = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
     if (cfg.device) {
       // pick a microphone by part of its name: settings.json → dictation.device, e.g. "HyperX"
@@ -171,9 +204,7 @@ window.Dictation = (() => {
     clearTimeout(micIdleTimer);
     micIdleTimer = setTimeout(() => {
       if (!mic || state === 'listening' || state === 'starting') return;
-      mic.stream.getTracks().forEach((t) => t.stop());
-      mic.ctx.close();
-      mic = null;
+      closeMic();
     }, 60000);
   }
 

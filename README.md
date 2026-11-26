@@ -91,8 +91,7 @@ Inside a Kolonka tab `kolonka` targets **its own** session by default (`$KOLONKA
 ```sh
 ws=$(kolonka ws new demo)                                    # new workspace, prints its id
 sid=$(kolonka new --ws "$ws" --name build --cwd . --no-select)
-kolonka run -t "$sid" "npm test"                             # type + Enter
-kolonka wait -t "$sid" --pattern 'passed|failed' --timeout 120000
+kolonka run -t "$sid" --wait 'passed|failed' --timeout 120000 npm test   # type + Enter, wait for its output
 kolonka text -t "$sid" --lines 20                            # read the screen back
 kolonka keys -t "$sid" ctrl+c                                # named keys: enter tab esc up f5 alt+x …
 kolonka status done -t "$sid"                                # idle | active | blocked | done
@@ -101,7 +100,18 @@ kolonka tree --json                                          # the whole model
 kolonka events                                               # live event stream (JSON lines)
 ```
 
-`wait` matches a regex against **new** output since the call (or the visible screen with `--screen`), waits for `--idle MS` of silence, or for `--exit`. Exit code 2 means timeout. `kolonka --help` lists every command.
+A session created with a command (`kolonka new --name srv npm run dev`) remembers it: *Restart* runs it again. When Kolonka itself starts, restored sessions open as plain shells in their folders — commands are never re-run on their own.
+
+Options go before the command for `new`, `type` and `run`: from the first word of the command on, everything is passed as is, so `kolonka run grep -h x` runs `grep -h x`. To catch a misplaced option, `run` and `type` refuse a command that contains one of their own options (`-t`, `--enter`, `--wait`, `--timeout`, `--json`, `--skip-echo`); a command that really has one goes after `--`: `kolonka run -t "$sid" -- docker build . -t img`.
+
+`wait` matches a regex against **new** output since the call (or the visible screen with `--screen`), waits for `--idle MS` of silence, or for `--exit`. Exit code 2 means timeout; `--timeout 0` waits without a limit.
+
+Two things to know when you wait for the output of a command you have just typed:
+
+- **Output can arrive before `wait` starts.** A fast command may print its result between `kolonka run` and `kolonka wait`. Use `run --wait RE` (one call), or take the position from `type`/`run`/`keys --json` (`{"seq": N}`) and pass it as `wait --since N`: output after that position is searched too.
+- **The shell echoes what you type.** The command line itself shows up in the output, so `run "echo done"` + `wait --pattern done` matches the echo, not the result. `run --wait` skips that first echoed line for you (`wait --skip-echo` does the same); otherwise pick a pattern that is not part of the command, e.g. `--pattern '^done$'` or a marker the command prints, not types. Skipping relies on the echo ending with a line break; a program that redraws the line with cursor moves instead (a full-screen app, some prompts) may need such a pattern too.
+
+`kolonka --help` lists every command.
 
 ### HTTP API
 
@@ -114,11 +124,11 @@ While Kolonka runs, `%APPDATA%\Kolonka\control.json` holds `{ url, port, token }
 | POST | `/api/sessions` | `{workspace, name, cwd, shell, command, select, after}` |
 | GET · PATCH · DELETE | `/api/sessions/:t` | PATCH `{name, status, workspace, index}` |
 | POST | `/api/sessions/:t/select` · `/restart` | |
-| POST | `/api/sessions/:t/type` | `{text, enter}` |
-| POST | `/api/sessions/:t/keys` | `{keys: ["ctrl+c", "enter"]}` |
+| POST | `/api/sessions/:t/type` | `{text, enter}` → `{seq}` |
+| POST | `/api/sessions/:t/keys` | `{keys: ["ctrl+c", "enter"]}` → `{seq}` |
 | GET | `/api/sessions/:t/text` | `?lines=N&all=1` |
-| POST | `/api/sessions/:t/wait` | `{pattern, screen, idle, exit, timeout}` |
-| GET | `/api/sessions/:t/stream` | SSE, raw output |
+| POST | `/api/sessions/:t/wait` | `{pattern, screen, idle, exit, since, skipEcho, timeout}`; `since`: a `seq` from type/keys (the last ~256 KB of output are kept); `timeout`: ms, default 30000, `0` = no limit; a wait ends when the client disconnects |
+| GET | `/api/sessions/:t/stream` | SSE, raw output; ends when the session is closed |
 | GET | `/api/events` | SSE: `session.created/updated/status/selected/closed/exited/bell`, `workspace.*` |
 | GET · POST · PATCH · DELETE | `/api/workspaces[/:w]` | `{name, collapsed, index}`, DELETE `?force=1` |
 | POST | `/api/notify` | `{text, title, session}` |
@@ -143,7 +153,7 @@ The hooks call Kolonka's launcher, so they work without Node.js in `PATH`. Outsi
 
 ## Configuration
 
-`%APPDATA%\Kolonka\settings.json` (⚙ → *Open settings.json*; restart to apply):
+`%APPDATA%\Kolonka\settings.json` (⚙ → *Open settings.json*; restart to apply). Put only the options you want to change there — everything else keeps its default, and new defaults reach you with updates. Comments (`//`, `/* */`) and trailing commas are allowed. If the file cannot be read, Kolonka says so in the window (and in `logs\main.log`) and runs with the defaults; the file itself is left untouched. Font size changed with <kbd>Ctrl</kbd>+<kbd>=</kbd>/<kbd>-</kbd> and a dragged sidebar width are remembered until you set `fontSize` / `sidebarWidth` here. Kolonka 0.1.0 wrote a copy of all its defaults into this file; an untouched copy like that is replaced once by the short template (the old file is kept as `settings.json.bak-0.1.0`), an edited one is left as it is.
 
 ```jsonc
 {

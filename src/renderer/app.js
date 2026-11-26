@@ -1,5 +1,5 @@
 'use strict';
-/* global Terminal, FitAddon, WebglAddon, SearchAddon, WebLinksAddon, Unicode11Addon, ICONS, I18N, Dictation */
+/* global Terminal, FitAddon, WebglAddon, SearchAddon, WebLinksAddon, Unicode11Addon, ICONS, I18N, Dictation, UiLogic */
 
 const api = window.kolonka;
 const $ = (s, r = document) => r.querySelector(s);
@@ -29,9 +29,10 @@ let dragInfo = null;
   t = I18N.make(S.lang);
   window.t = t;
   applyStaticI18n();
-  fontSize = Number(localStorage.getItem('fontSize')) || S.settings.fontSize || 14;
+  // a zoom / sidebar width picked in the window is kept until settings.json sets another value
+  fontSize = UiLogic.storedSize(localStorage, 'fontSize', S.settings.fontSize, 14) || S.settings.fontSize || 14;
   if (!S.settings.backgroundMaterial || S.settings.backgroundMaterial === 'none') document.body.classList.add('no-material');
-  const w = Number(localStorage.getItem('sidebarW')) || S.settings.sidebarWidth;
+  const w = UiLogic.storedSize(localStorage, 'sidebarW', S.settings.sidebarWidth, 264) || S.settings.sidebarWidth;
   if (w) document.documentElement.style.setProperty('--sidebar-w', w + 'px');
   if (localStorage.getItem('sidebarHidden') === '1') document.body.classList.add('sidebar-hidden');
 
@@ -42,18 +43,14 @@ let dragInfo = null;
     if (!x.ready) x.queue.push([data, seq]);
     else x.term.write(data);
   });
-  api.onExit((id, code) => {
-    const x = terms.get(id);
-    if (!x) return;
-    x.exited = true;
-    x.term.write(`\r\n\x1b[2m${t('term.exited', { code })}\x1b[0m\r\n`);
-  });
+  api.onExit((id, code) => markExited(terms.get(id), code));
   api.onClosed((id) => disposeTerm(id));
   api.onToast(showToast);
   api.onWindowFocus((f) => document.body.classList.toggle('focused', f));
   api.onWindowAction((a) => { if (a === 'toggle-sidebar') toggleSidebar(); });
 
   Dictation.init(S.dictation, { toast: (title, text) => showToast({ title, text }), t });
+  if (S.settingsError) showToast({ title: t('settings.errorTitle'), text: S.settingsError, sticky: true });
   window.addEventListener('error', (e) => api.log('error', `renderer: ${e.message} @ ${e.filename}:${e.lineno}`, e.error && e.error.stack));
   window.addEventListener('unhandledrejection', (e) => api.log('error', 'renderer unhandled rejection: ' + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
   wireChrome();
@@ -66,7 +63,10 @@ function ensureTerm(id) {
   const host = el('div', 'term-host');
   host.dataset.id = id;
   $('#terms').appendChild(host);
+  const sess = findSession(id);
   const term = new Terminal({
+    // the pty's size, not xterm's 80×24: a background tab must render the output the way it was laid out
+    cols: (sess && sess.cols) || 120, rows: (sess && sess.rows) || 32,
     fontFamily: S.settings.fontFamily, fontSize, lineHeight: S.settings.lineHeight || 1.15,
     cursorStyle: S.settings.cursorStyle || 'bar', cursorBlink: S.settings.cursorBlink !== false, cursorWidth: 2,
     scrollback: S.settings.scrollback || 10000, theme: THEME, allowProposedApi: true, allowTransparency: false,
@@ -106,13 +106,23 @@ function ensureTerm(id) {
   const rec = { term, fit, search, host, ready: false, queue: [], webgl: null, exited: false };
   terms.set(id, rec);
   api.snapshot(id).then((snap) => {
-    if (!terms.has(id)) return;
+    if (terms.get(id) !== rec) return;
     if (snap) term.write(snap.data);
     for (const [d, seq] of rec.queue) if (!snap || seq > snap.seq) term.write(d);
     rec.queue = [];
     rec.ready = true;
   });
+  // already exited (the shell failed to start, or the window was reloaded): Enter restarts it
+  if (sess && sess.exited) markExited(rec, sess.exitCode);
   return rec;
+}
+
+function markExited(x, code) {
+  if (!x || x.exited) return;
+  x.exited = true;
+  const note = `\r\n\x1b[2m${t('term.exited', { code })}\x1b[0m\r\n`;
+  if (x.ready) x.term.write(note);
+  else x.queue.push([note, Infinity]); // after the snapshot
 }
 
 function disposeTerm(id) {
@@ -122,6 +132,8 @@ function disposeTerm(id) {
   t.term.dispose();
   t.host.remove();
   terms.delete(id);
+  // a restarted session gets a new terminal under the same id: it must be fitted and focused again
+  if (shownId === id) shownId = null;
 }
 
 let shownId = null;
@@ -164,7 +176,7 @@ new ResizeObserver(() => requestAnimationFrame(fitActive)).observe($('#terms'));
 
 function setFontSize(n) {
   fontSize = Math.max(8, Math.min(32, n));
-  localStorage.setItem('fontSize', fontSize);
+  UiLogic.storeSize(localStorage, 'fontSize', fontSize, S.settings.fontSize);
   for (const t of terms.values()) t.term.options.fontSize = fontSize;
   requestAnimationFrame(fitActive);
 }
@@ -197,9 +209,13 @@ function render() {
   if (renameLock) { pendingRender = true; return; }
   pendingRender = false;
   // create / dispose xterm instances to match the session list
-  const ids = new Set(allSessions().map((s) => s.id));
+  const list = allSessions();
+  const ids = new Set(list.map((s) => s.id));
   for (const id of [...terms.keys()]) if (!ids.has(id)) disposeTerm(id);
-  for (const id of ids) ensureTerm(id);
+  for (const s of list) {
+    const x = ensureTerm(s.id);
+    if (s.exited) markExited(x, s.exitCode);
+  }
 
   const tree = $('#tree');
   const scroll = tree.scrollTop;
@@ -472,15 +488,15 @@ function dictTarget(id) {
 }
 
 function handleTermKey(e, id) {
+  if (UiLogic.isComposing(e)) return false; // an IME is composing: the key is the IME's
   if (Dictation.handleKey(e, dictTarget(id))) return true;
   if (e.type !== 'keydown') return false;
   const x = terms.get(id);
-  const k = e.key.toLowerCase();
-  if (e.ctrlKey && !e.shiftKey && !e.altKey && k === 'c' && x && x.term.hasSelection()) {
-    copySelection(id); x.term.clearSelection(); return true;
-  }
-  if (e.ctrlKey && !e.altKey && k === 'v') { paste(id); return true; }
-  if (e.ctrlKey && e.shiftKey && k === 'c') { copySelection(id); return true; }
+  // by physical key: works on the Russian (and any other) layout
+  const act = UiLogic.clipboardAction(e, !!(x && x.term.hasSelection()));
+  if (act === 'copy-clear') { copySelection(id); x.term.clearSelection(); return true; }
+  if (act === 'copy') { copySelection(id); return true; }
+  if (act === 'paste') { paste(id); return true; }
   return handleGlobalKey(e);
 }
 
@@ -741,12 +757,12 @@ async function settingsMenu(at) {
 }
 
 // =============== toasts ===============
-function showToast({ title, text, session }) {
+function showToast({ title, text, session, sticky }) {
   const node = el('div', 'toast', `<span class="t-ico">${ICONS.bolt}</span><div><div class="t-title">${esc(title || 'Kolonka')}</div>${text ? `<div class="t-text">${esc(text)}</div>` : ''}</div>`);
   node.addEventListener('click', () => { if (session) api.cmd('session.select', { id: session }); dismiss(); });
   const dismiss = () => { node.classList.add('out'); setTimeout(() => node.remove(), 220); };
   $('#toasts').appendChild(node);
-  setTimeout(dismiss, 6000);
+  setTimeout(dismiss, sticky ? 30000 : 6000);
 }
 function toastError(msg) { showToast({ title: t('toast.error'), text: msg }); }
 let hintShown = 0;
@@ -808,15 +824,16 @@ function wireChrome() {
     const up = () => {
       document.removeEventListener('mousemove', move);
       document.removeEventListener('mouseup', up);
-      localStorage.setItem('sidebarW', parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w'), 10));
+      UiLogic.storeSize(localStorage, 'sidebarW', parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w'), 10), S.settings.sidebarWidth);
       fitActive();
     };
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
   });
   rz.addEventListener('dblclick', () => {
-    document.documentElement.style.setProperty('--sidebar-w', '264px');
+    document.documentElement.style.setProperty('--sidebar-w', (S.settings.sidebarWidth || 264) + 'px');
     localStorage.removeItem('sidebarW');
+    fitActive();
   });
   document.body.classList.add('focused');
 }

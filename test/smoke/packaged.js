@@ -112,6 +112,12 @@ async function main() {
   });
   log('screen:\n' + screen.trimEnd());
 
+  // run --wait: one call, no race with fast output, and the echo of the command line is not taken for its output
+  const matched = (await cli('run', '-t', 'smoke', '--wait', 'kolonka-wait-ok', '--timeout', '30000', 'echo', 'kolonka-wait-ok')).trim();
+  if (matched !== 'kolonka-wait-ok') throw new Error(`run --wait printed "${matched}"`);
+
+  await checkCmdFallback();
+
   log('quitting through the API');
   await api('POST', '/api/window', { action: 'quit' });
   if (!(await exitedWithin(20000))) throw new Error('Kolonka did not exit within 20 s after quit');
@@ -119,6 +125,34 @@ async function main() {
   log('Kolonka exited with', code);
   if (code !== 0) throw new Error(`Kolonka exited with code ${code}`);
   if (fs.existsSync(CONTROL)) throw new Error('control.json is still there after quit');
+}
+
+// kolonka.cmd without node on PATH runs the CLI through the real Kolonka.exe: it must work and must not
+// leave ELECTRON_RUN_AS_NODE set in the calling cmd. (The code page switch is checked in test/cmd-wrapper.test.js.)
+async function checkCmdFallback() {
+  const cmdCli = path.join(path.dirname(EXE), 'resources', 'bin', 'kolonka.cmd');
+  const script = path.join(DATA, 'fallback-check.cmd');
+  fs.writeFileSync(script, [
+    '@echo off',
+    `call "${cmdCli}" ls`,
+    'echo RC=%ERRORLEVEL%',
+    'if defined ELECTRON_RUN_AS_NODE (echo ENV=leaked) else (echo ENV=clean)',
+    '',
+  ].join('\r\n'));
+  const e = env();
+  const pathKey = Object.keys(e).find((k) => k.toUpperCase() === 'PATH');
+  e[pathKey] = e[pathKey].split(';').filter((d) => d && !fs.existsSync(path.join(d, 'node.exe'))).join(';');
+  const out = await new Promise((resolve, reject) => {
+    execFile('cmd.exe', ['/d', '/c', script], { env: e, timeout: 60000, windowsHide: true }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(`fallback check failed: ${stderr || err.message}\n${stdout}`));
+      resolve(stdout);
+    });
+  });
+  log('kolonka.cmd without node:\n' + out.trimEnd());
+  const val = (k) => (new RegExp(`^${k}=(.*)$`, 'm').exec(out) || [])[1];
+  if (val('RC') !== '0') throw new Error('kolonka.cmd ls through Kolonka.exe failed');
+  if (!/\tsmoke\t/.test(out)) throw new Error('kolonka.cmd ls did not list the smoke session');
+  if (val('ENV') !== 'clean') throw new Error('ELECTRON_RUN_AS_NODE leaked out of kolonka.cmd');
 }
 
 function dumpDiagnostics() {
