@@ -75,6 +75,23 @@ function plan(opts) {
   return out;
 }
 
+// Hooks for Claude Code running on a server in a Kolonka ssh tab: they call the kolonka-remote script
+// (`kolonka remote install`), which prints the status as OSC 7711 to the terminal. Silent, and exit 0
+// when the script is missing or the terminal is not Kolonka.
+const REMOTE_MARK = '# kolonka-remote-status-hook';
+function remoteHookEntry(status) {
+  return {
+    type: 'command',
+    command: `k="$HOME/.local/bin/kolonka"; [ -x "$k" ] || k=$(command -v kolonka 2>/dev/null); [ -n "$k" ] && "$k" status ${status} >/dev/null 2>&1; exit 0 ${REMOTE_MARK}`,
+  };
+}
+
+function remotePlan() {
+  const out = {};
+  for (const [ev, st] of Object.entries(EVENTS)) out[ev] = [{ hooks: [remoteHookEntry(st)] }];
+  return out;
+}
+
 function readConfig(file) {
   if (!fs.existsSync(file)) return null;
   const raw = fs.readFileSync(file, 'utf8');
@@ -159,4 +176,4 @@ function migrate(opts) {
   return true;
 }
 
-module.exports = { plan, install, installed, migrate, settingsFile, hookEntry, hasGitBash, isOurs, EVENTS, MARK };
+module.exports = { plan, remotePlan, remoteHookEntry, install, installed, migrate, settingsFile, hookEntry, hasGitBash, isOurs, EVENTS, MARK, REMOTE_MARK };

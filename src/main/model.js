@@ -7,8 +7,11 @@ const { ApiError } = require('./errors');
 const { homeDir } = require('./shells');
 const { dirOk } = require('./paths');
 const { OutputMatcher } = require('./match');
+const remote = require('./remote');
 
-const STATUSES = ['idle', 'active', 'blocked', 'done'];
+const { STATUSES } = remote;
+const REMOTE_PER_MINUTE = 10;   // open / notify requests per tab per minute; more are dropped
+const REMOTE_LOG_PER_MINUTE = 5; // log lines about remote requests per tab per minute
 const SAVE_DEBOUNCE = 500;
 const SAVE_MAX_WAIT = 2000;
 const MAX_TIMEOUT = 2147483647; // the largest delay setTimeout accepts
@@ -30,8 +33,17 @@ function maxId(ids, prefix) {
 
 class Model extends EventEmitter {
   // Session: the session class; tests pass a fake one so the model can run without node-pty.
-  constructor({ dataDir, settings, shells, env, pathPrepend, Session }) {
+  // remoteDeps: { listProcesses, sshExe } for remote control; tests pass fakes.
+  constructor({ dataDir, settings, shells, env, pathPrepend, Session, remoteDeps }) {
     super();
+    const deps = remoteDeps || {};
+    this._listProcesses = deps.listProcesses || (() => remote.listProcesses());
+    this._findSshExe = deps.sshExe || (() => remote.findSshExe(this._remoteCfg().ssh));
+    this.askRemote = null;         // async ({ session, from, host, cmd }) -> 'once' | 'always' | 'deny'; set by the window
+    this.remoteAllowed = [];       // hosts allowed with "Always for this host" (kept in state.json)
+    this._remoteLimit = new remote.RateLimiter(REMOTE_PER_MINUTE, 60000);
+    this._remoteLogLimit = new remote.RateLimiter(REMOTE_LOG_PER_MINUTE, 60000);
+    this._askChain = Promise.resolve();
     this.Session = Session || require('./session').Session;
     this.extraEnv = env || {};
     this.pathPrepend = pathPrepend || null;
@@ -53,6 +65,10 @@ class Model extends EventEmitter {
   // ---------- persistence ----------
   load() {
     const st = this._readState();
+    const remembered = st && st.remote && Array.isArray(st.remote.allowedHosts) ? st.remote.allowedHosts : [];
+    this.remoteAllowed = [...new Set(remembered.filter(remote.validHost))];
+    // restore "rerun": every tab with a command runs it again; "fresh" (default): only tabs marked rerun
+    const rerunAll = this.settings.restore === 'rerun';
     if (st && Array.isArray(st.workspaces) && st.workspaces.length) {
       this.counters = Object.assign({ w: 0, s: 0 }, st.counters);
       if (st.lastSize) this.lastSize = st.lastSize;
@@ -62,11 +78,16 @@ class Model extends EventEmitter {
         this.workspaces.push(ws);
         for (const s of w.sessions || []) {
           if (!s || typeof s.id !== 'string' || this.sessions.has(s.id)) continue;
-          // the command is kept for "Restart", but not run again on its own when Kolonka starts
+          // The command is kept for "Restart"; it runs again on its own only for tabs marked rerun
+          // (opened by a server over ssh) or with "restore": "rerun". A tab opened over ssh is
+          // its ssh connection: it connects again.
+          const ssh = s.ssh ? remote.normalizeSsh(s.ssh) : null;
+          const command = typeof s.command === 'string' ? s.command : undefined;
+          const rerun = s.rerun === true;
           this._spawn({
             id: s.id, name: String(s.name || s.id), workspaceId: ws.id,
             cwd: dirOk(s.cwd) ? s.cwd : homeDir, shellKey: s.shell,
-            command: typeof s.command === 'string' ? s.command : undefined, runCommand: false,
+            command, runCommand: !!command && (rerun || rerunAll), ssh, rerun,
           });
         }
       }
@@ -131,10 +152,14 @@ class Model extends EventEmitter {
       counters: this.counters,
       lastSize: this.lastSize,
       activeId: this.activeId,
+      remote: { allowedHosts: this.remoteAllowed.slice() },
       workspaces: this.workspaces.map((w) => ({
         id: w.id, name: w.name, collapsed: w.collapsed,
         sessions: w.sessionIds.map((id) => this.sessions.get(id)).filter(Boolean)
-          .map((s) => Object.assign({ id: s.id, name: s.name, cwd: s.cwd, shell: s.shellKey }, s.command ? { command: s.command } : {})),
+          .map((s) => Object.assign({ id: s.id, name: s.name, cwd: s.cwd, shell: s.shellKey },
+            s.command ? { command: s.command } : {},
+            s.ssh ? { ssh: { destination: s.ssh.destination, options: s.ssh.options, cmd: s.ssh.cmd } } : {},
+            s.rerun ? { rerun: true } : {})),
       })),
     };
   }
@@ -273,11 +298,22 @@ class Model extends EventEmitter {
   }
 
   // ---------- sessions ----------
-  _spawn({ id, name, workspaceId, cwd, shellKey, command, runCommand = true, index }) {
-    const key = this.shells[shellKey] ? shellKey : this.defaultShellKey();
+  // ssh: { destination, options, cmd } makes the tab an ssh connection: ssh.exe is started directly
+  // (no shell in between) with the arguments as an array, and the command is not typed.
+  _spawn({ id, name, workspaceId, cwd, shellKey, command, runCommand = true, index, ssh, rerun }) {
+    let key; let shell;
+    if (ssh) {
+      key = 'ssh';
+      shell = { label: 'SSH', file: this._findSshExe() || 'ssh.exe', args: remote.buildSshArgs(ssh), env: {} };
+      command = undefined;
+    } else {
+      key = this.shells[shellKey] ? shellKey : this.defaultShellKey();
+      shell = this.shells[key];
+    }
     const s = new this.Session({
-      id, name, workspaceId, cwd, shellKey: key, command, runCommand,
-      shell: this.shells[key], cols: this.lastSize.cols, rows: this.lastSize.rows,
+      id, name, workspaceId, cwd, shellKey: key, command, runCommand: ssh ? false : runCommand,
+      ssh: ssh || null, rerun: !!rerun,
+      shell, cols: this.lastSize.cols, rows: this.lastSize.rows,
       scrollback: this.settings.scrollback, env: this.extraEnv, pathPrepend: this.pathPrepend,
     });
     const ws = this.ws(workspaceId);
@@ -289,7 +325,7 @@ class Model extends EventEmitter {
       s.start();
     } catch (e) {
       s.exited = true; s.exitCode = -1;
-      s.term && s.term.write(`\r\n\x1b[31mFailed to start ${this.shells[key].file}: ${e.message}\x1b[0m\r\n`);
+      s.term && s.term.write(`\r\n\x1b[31mFailed to start ${shell.file}: ${e.message}\x1b[0m\r\n`);
     }
     return s;
   }
@@ -323,6 +359,10 @@ class Model extends EventEmitter {
       if (s.id !== this.activeId) { s.unread = true; this.changed({ save: false }); }
       this.event('session.bell', { session: s.id });
     });
+    s.on('remote', (msg) => {
+      if (!live()) return;
+      this.handleRemote(s, msg).catch((e) => this._log('warn', `remote control from ${s.id}: ${e && e.stack || e}`));
+    });
     s.on('exit', (code) => {
       if (!live()) return;
       this.emit('exit', s.id, code);
@@ -332,7 +372,12 @@ class Model extends EventEmitter {
     });
   }
 
-  createSession({ workspace, name, cwd, shell, command, select = true, after } = {}) {
+  // rerun: run the command again when Kolonka starts. ssh: see _spawn (checked again here).
+  createSession({ workspace, name, cwd, shell, command, select = true, after, rerun, ssh } = {}) {
+    if (ssh !== undefined && ssh !== null) {
+      ssh = remote.normalizeSsh(ssh);
+      if (!ssh) throw new ApiError(400, 'ssh: { destination, options, cmd } with a valid destination and only -p -l -i -J -4 -6');
+    }
     let ws;
     if (workspace) ws = this.resolveWorkspace(workspace);
     else ws = this.resolveWorkspace('current', { required: false }) || this.createWorkspace({ name: 'main' });
@@ -350,8 +395,9 @@ class Model extends EventEmitter {
       if (a.workspaceId === ws.id) index = ws.sessionIds.indexOf(a.id) + 1;
     }
     const s = this._spawn({
-      id, name: (name || '').trim() || this.autoName(ws, command), workspaceId: ws.id,
-      cwd: dir, shellKey: shell, command, index,
+      // an ssh tab without a name is named after its host (the server usually sends a name)
+      id, name: (name || '').trim().slice(0, 80) || (ssh ? ssh.destination.slice(ssh.destination.lastIndexOf('@') + 1).slice(0, 40) : this.autoName(ws, command)),
+      workspaceId: ws.id, cwd: dir, shellKey: shell, command, index, ssh, rerun: rerun === true,
     });
     ws.collapsed = false;
     if (select || !this.activeId) this.activeId = id;
@@ -419,6 +465,7 @@ class Model extends EventEmitter {
       this.activeId = rest[Math.min(idx, rest.length - 1)] || null;
       if (this.activeId) this.sessions.get(this.activeId).unread = false;
     }
+    for (const k of ['open', 'notify', 'log']) { this._remoteLimit.forget(`${k}:${s.id}`); this._remoteLogLimit.forget(`${k}:${s.id}`); }
     this.changed();
     this.emit('closed', s.id);
     this.event('session.closed', { session: s.id });
@@ -429,16 +476,128 @@ class Model extends EventEmitter {
     const s = this.resolveSession(t);
     const ws = this.ws(s.workspaceId);
     const index = ws.sessionIds.indexOf(s.id);
-    const { id, name, cwd, shellKey, command } = s;
+    const { id, name, cwd, shellKey, command, ssh, rerun } = s;
     s.kill();
     this.sessions.delete(id);
     ws.sessionIds.splice(index, 1);
     this.emit('closed', id);
-    // the session's own command (`kolonka new -- npm run dev`) is started again
-    this._spawn({ id, name, workspaceId: ws.id, cwd: dirOk(cwd) ? cwd : homeDir, shellKey, command, index });
+    // the session's own command (`kolonka new -- npm run dev`) is started again; an ssh tab reconnects
+    this._spawn({ id, name, workspaceId: ws.id, cwd: dirOk(cwd) ? cwd : homeDir, shellKey, command, index, ssh, rerun });
     this.changed();
     this.event('session.restarted', { session: id });
     return this.sessions.get(id);
+  }
+
+  // ---------- remote control (OSC 7711 / 9 / 777 in a tab's output, see remote.js) ----------
+  _remoteCfg() { return Object.assign({ enabled: true, allowHosts: [], ssh: '', fromLocalTabs: false }, this.settings.remote || {}); }
+
+  _log(level, msg) { this.emit('log', level, msg); }
+
+  // At most a few log lines per tab per minute: a `cat` of a broken file must not flood the log.
+  _remoteLog(s, level, msg) {
+    if (this._remoteLogLimit.take('log:' + s.id)) this._log(level, msg);
+  }
+
+  // Something the user should see in the window (a refused request): main turns it into a toast.
+  _remoteDenied(s, reason, req = {}) {
+    this.event('remote.denied', { session: s.id, reason, host: req.host || null });
+    this.emit('remote-notice', { reason, session: s.id, name: s.name, host: req.host || null, from: req.from || null });
+    this._remoteLog(s, 'info', `remote open from ${s.id} refused (${reason}): host ${req.host || '?'}`);
+  }
+
+  // One parsed request from session s. Returns a promise (open is asynchronous).
+  async handleRemote(s, msg) {
+    if (!msg) return;
+    if (msg.error) { this._remoteLog(s, 'info', `ignored a remote control sequence from ${s.id}: ${msg.error}`); return; }
+    if (this._remoteCfg().enabled === false) return;
+    switch (msg.action) {
+      case 'status':
+        this._setStatus(s, msg.state);
+        this.changed({ save: false });
+        return;
+      case 'rename':
+        if (msg.name && msg.name !== s.name) { s.name = msg.name; this.changed(); this.event('session.updated', { session: s.id }); }
+        return;
+      case 'notify':
+        if (!this._remoteLimit.take('notify:' + s.id)) { this._remoteLog(s, 'info', `notifications from ${s.id} dropped: more than ${REMOTE_PER_MINUTE} a minute`); return; }
+        this.event('session.notify', { session: s.id, title: msg.title, text: msg.text });
+        this.emit('notify', { title: msg.title, text: msg.text, session: s.id });
+        return;
+      case 'open': return this._remoteOpen(s, msg);
+      default: return;
+    }
+  }
+
+  // The ssh connection a tab belongs to: the one Kolonka opened it with, or an ssh.exe running
+  // under its shell (the user typed `ssh host`). null for a local tab.
+  async _sshOrigin(s) {
+    if (s.ssh) return { destination: s.ssh.destination, options: s.ssh.options };
+    if (!s.pid || s.exited) return null;
+    let procs;
+    try { procs = await this._listProcesses(); } catch (e) { this._log('warn', `remote open: ${e.message}`); return null; }
+    return remote.sshOriginFromTree(s.pid, procs || []);
+  }
+
+  remoteHostAllowed(dest) {
+    const cfg = this._remoteCfg();
+    const list = (Array.isArray(cfg.allowHosts) ? cfg.allowHosts : []).concat(this.remoteAllowed);
+    return list.some((e) => remote.hostMatches(e, dest));
+  }
+
+  allowRemoteHost(dest) {
+    if (!remote.validHost(dest) || this.remoteAllowed.some((h) => h.toLowerCase() === dest.toLowerCase())) return;
+    this.remoteAllowed.push(dest);
+    this.changed();
+  }
+
+  forgetRemoteHost(dest) {
+    const before = this.remoteAllowed.length;
+    this.remoteAllowed = this.remoteAllowed.filter((h) => h.toLowerCase() !== String(dest).toLowerCase());
+    if (this.remoteAllowed.length !== before) this.changed();
+    return before !== this.remoteAllowed.length;
+  }
+
+  // One permission dialog at a time; a request that waited behind an "Always" for its host passes.
+  _askQueued(req) {
+    const run = async () => {
+      if (this.remoteHostAllowed(req.host)) return 'once';
+      if (typeof this.askRemote !== 'function') return 'deny';
+      try { return await this.askRemote(req); } catch (e) { this._log('warn', 'remote open dialog: ' + e.message); return 'deny'; }
+    };
+    const p = this._askChain.then(run, run);
+    this._askChain = p.catch(() => {});
+    return p;
+  }
+
+  async _remoteOpen(s, msg) {
+    const cfg = this._remoteCfg();
+    if (!this._remoteLimit.take('open:' + s.id)) {
+      this._remoteLog(s, 'info', `remote open from ${s.id} dropped: more than ${REMOTE_PER_MINUTE} a minute`);
+      return;
+    }
+    const same = msg.host === remote.SAME;
+    const origin = await this._sshOrigin(s);
+    if (this.sessions.get(s.id) !== s) return; // closed or restarted meanwhile
+    // a tab that is not an ssh session never opens tabs: `cat` of a file in a local shell must not
+    if (!origin && (same || !cfg.fromLocalTabs)) return this._remoteDenied(s, same ? 'no-ssh' : 'not-ssh', { host: msg.host });
+    const target = same ? origin : { destination: msg.host, options: [] };
+    if (!this._findSshExe()) return this._remoteDenied(s, 'no-ssh-exe', { host: target.destination });
+    const req = { session: s.id, name: s.name, from: origin ? origin.destination : null, host: target.destination, cmd: msg.cmd, same };
+    if (!this.remoteHostAllowed(target.destination)) {
+      const answer = await this._askQueued(req);
+      if (answer === 'always') this.allowRemoteHost(target.destination);
+      else if (answer !== 'once') return this._remoteDenied(s, 'denied', req);
+    }
+    let ws = null;
+    if (msg.ws) ws = this.workspaces.find((w) => w.name.toLowerCase() === msg.ws.toLowerCase()) || this.createWorkspace({ name: msg.ws });
+    else ws = this.ws(s.workspaceId);
+    const created = this.createSession({
+      workspace: ws ? ws.id : undefined, name: msg.name, select: msg.select, rerun: true,
+      ssh: { destination: target.destination, options: target.options, cmd: msg.cmd },
+    });
+    this._log('info', `remote open from ${s.id}: ${created.id} → ${target.destination}`);
+    this.event('remote.opened', { session: s.id, created: created.id, host: target.destination });
+    return created;
   }
 
   // ---------- input / output ----------

@@ -15,6 +15,9 @@ class FakeSession extends EventEmitter {
     this.cwd = opts.cwd;
     this.shellKey = opts.shellKey;
     this.command = opts.command || null;
+    this.ssh = opts.ssh || null;
+    this.rerun = !!opts.rerun;
+    this.pid = FakeSession.nextPid++;
     this.status = 'idle';
     this.unread = false;
     this.title = '';
@@ -58,9 +61,11 @@ class FakeSession extends EventEmitter {
       id: this.id, name: this.name, workspace: this.workspaceId, cwd: this.cwd, shell: this.shellKey,
       status: this.status, unread: this.unread, exited: this.exited, exitCode: this.exitCode,
       command: this.command, seq: this.seq,
+      remote: this.ssh ? { host: this.ssh.destination, cmd: this.ssh.cmd } : null, rerun: this.rerun,
     };
   }
 }
 FakeSession.failNextStart = false;
+FakeSession.nextPid = 5000;
 
 module.exports = { FakeSession };

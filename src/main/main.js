@@ -190,6 +190,32 @@ model.on('status', (s, status) => {
   }
 });
 
+// ---------- remote control over ssh (see src/main/remote.js) ----------
+model.on('log', (level, msg) => crash.log(level, msg));
+// a notification asked for by a program in a tab (OSC 7711 notify, OSC 9, OSC 777)
+model.on('notify', ({ title, text, session }) => notify({ title, text, session }));
+model.on('remote-notice', ({ reason, session, name, host }) => {
+  const key = { 'no-ssh': 'remote.noSsh', 'not-ssh': 'remote.notSsh', 'no-ssh-exe': 'remote.noSshExe' }[reason];
+  if (key) send('toast', { title: t('remote.refusedTitle'), text: t(key, { name, host: host || '' }), session });
+});
+model.askRemote = async ({ session, name, from, host, cmd, same }) => {
+  if (!win || win.isDestroyed()) return 'deny';
+  if (!win.isFocused()) win.flashFrame(true);
+  const r = await dialog.showMessageBox(win, {
+    type: 'warning',
+    title: 'Kolonka',
+    buttons: [t('remote.allowOnce'), t('remote.allowAlways'), t('remote.deny')],
+    defaultId: 2,
+    cancelId: 2,
+    noLink: true,
+    message: same || !from ? t('remote.askSame', { name, host }) : t('remote.askOther', { name, from, host }),
+    detail: cmd ? cmd : t('remote.askLogin'),
+  });
+  win.flashFrame(false);
+  if (model.sessions.has(session) === false) return 'deny';
+  return ['once', 'always', 'deny'][r.response] || 'deny';
+};
+
 const notifications = new Set();
 function notify({ title, text, session, force }) {
   const s = session && model.sessions.get(session);

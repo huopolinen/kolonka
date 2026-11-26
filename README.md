@@ -35,6 +35,7 @@ So I built the terminal I wanted on Windows. Kolonka keeps every shell in a **si
 - **Hold Space to talk.** Hold <kbd>Space</kbd>, speak, release — the text is typed into the active tab. A short tap is still a normal space. Since it is plain terminal input, it works with anything: bash, PowerShell, Claude Code, vim, an `ssh` session on a remote server. Recognition runs **locally** with [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (GPU via CUDA, or CPU); cloud engines are optional.
 - **Control API + CLI.** Create sessions, type into them, read their screen back, wait for output, set status, send notifications. `kolonka` is on `PATH` inside every Kolonka tab automatically.
 - **Claude Code hooks in one click.** Claude Code reports its own state onto its row.
+- **Remote control over ssh.** A script on a server can open Kolonka tabs connected to that server, set its tab's status and send notifications — with a permission prompt for unknown hosts.
 - **Your shells.** Git Bash (default when installed), PowerShell 7, Windows PowerShell, cmd — or your own. The current directory is tracked, new tabs open where you are, and the whole layout comes back after a restart.
 - **Pleasant to use.** Mica backdrop, WebGL rendering, command palette, search in scrollback, Ctrl+click links, Windows Terminal–style copy & paste, English UI (Russian available in settings).
 - **Crash reports you control.** If something breaks, Kolonka offers a pre-filled GitHub issue with a scrubbed log — nothing is sent without you.
@@ -114,7 +115,7 @@ kolonka tree --json                                          # the whole model
 kolonka events                                               # live event stream (JSON lines)
 ```
 
-A session created with a command (`kolonka new --name srv npm run dev`) remembers it: *Restart* runs it again. When Kolonka itself starts, restored sessions open as plain shells in their folders — commands are never re-run on their own.
+A session created with a command (`kolonka new --name srv npm run dev`) remembers it: *Restart* runs it again. When Kolonka itself starts, restored sessions open as plain shells in their folders and their commands are not re-run — unless the tab was created with `--rerun` (or opened by a server, see [Remote control over SSH](#remote-control-over-ssh)), or `"restore": "rerun"` is set in settings.json, which re-runs the command of every tab that has one.
 
 Options go before the command for `new`, `type` and `run`: from the first word of the command on, everything is passed as is, so `kolonka run grep -h x` runs `grep -h x`. To catch a misplaced option, `run` and `type` refuse a command that contains one of their own options (`-t`, `--enter`, `--wait`, `--timeout`, `--json`, `--skip-echo`); a command that really has one goes after `--`: `kolonka run -t "$sid" -- docker build . -t img`.
 
@@ -135,7 +136,7 @@ While Kolonka runs, `%APPDATA%\Kolonka\control.json` holds `{ url, port, token }
 |---|---|---|
 | GET | `/api/tree` | |
 | GET | `/api/sessions` | `?workspace=` |
-| POST | `/api/sessions` | `{workspace, name, cwd, shell, command, select, after}` |
+| POST | `/api/sessions` | `{workspace, name, cwd, shell, command, select, after, rerun}` |
 | GET · PATCH · DELETE | `/api/sessions/:t` | PATCH `{name, status, workspace, index}` |
 | POST | `/api/sessions/:t/select` · `/restart` | |
 | POST | `/api/sessions/:t/type` | `{text, enter}` → `{seq}` |
@@ -143,10 +144,12 @@ While Kolonka runs, `%APPDATA%\Kolonka\control.json` holds `{ url, port, token }
 | GET | `/api/sessions/:t/text` | `?lines=N&all=1` |
 | POST | `/api/sessions/:t/wait` | `{pattern, screen, idle, exit, since, skipEcho, timeout}`; `since`: a `seq` from type/keys (the last ~256 KB of output are kept); `timeout`: ms, default 30000, `0` = no limit; a wait ends when the client disconnects |
 | GET | `/api/sessions/:t/stream` | SSE, raw output; ends when the session is closed |
-| GET | `/api/events` | SSE: `session.created/updated/status/selected/closed/exited/bell`, `workspace.*` |
+| GET | `/api/events` | SSE: `session.created/updated/status/selected/closed/exited/bell/notify`, `workspace.*`, `remote.opened/denied` |
 | GET · POST | `/api/workspaces` | POST `{name}` |
 | GET · PATCH · DELETE | `/api/workspaces/:w` | GET: one workspace with its sessions, as in `/api/tree`; PATCH `{name, collapsed, index}`; DELETE `?force=1` |
 | POST | `/api/notify` | `{text, title, session}` |
+| GET | `/api/remote` | remote control: `{enabled, allowHosts, remembered}` |
+| DELETE | `/api/remote/hosts/:host` | forget a host allowed with *Always for this host* |
 | POST | `/api/screenshot` | `{path}` |
 | GET · POST | `/api/window` | POST `{action: "focus" \| "toggle-sidebar" \| "quit"}` |
 
@@ -166,6 +169,88 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:47811/api/tree
 
 The hooks call Kolonka's launcher, so they work without Node.js in `PATH`. Outside Kolonka, or once Kolonka is removed, they exit silently. `kolonka hooks uninstall` removes exactly these entries (including the `node "…kolonka.js"` form older versions wrote), and so does uninstalling Kolonka from Windows settings; the uninstaller also offers to delete the downloaded voice files.
 
+For Claude Code running **on a server** in an ssh tab, see [Remote control over SSH](#claude-code-on-a-server).
+
+## Remote control over SSH
+
+A program on a server you are connected to over ssh can ask Kolonka to **open a new tab connected to the same server**, to set the **status** of its tab, to show a **notification** or to **rename** the tab. It does so by printing an escape sequence to its terminal; Kolonka sees it in the output of the tab and acts on it. Nothing listens on the network and nothing has to run on your computer besides Kolonka.
+
+```sh
+# on the server, in a Kolonka ssh tab
+kolonka open --name logs -- journalctl -fu myapp     # a new Kolonka tab: ssh to this server, running the command
+kolonka open --here                                  # a shell on this server, in the current directory
+kolonka status blocked                               # this tab: needs you
+kolonka notify "deploy finished" --title myserver    # a notification; clicking it switches to this tab
+kolonka rename "build box"
+```
+
+### Setting it up
+
+1. **Install the script on the server**: `kolonka remote install myserver` (from a Kolonka tab on Windows) copies [`bin/kolonka-remote`](bin/kolonka-remote) to `~/.local/bin/kolonka` over ssh, asking before it overwrites a file there. It is a POSIX `sh` script that needs only `printf` and `base64`; you can also copy it by hand.
+2. **Tell the server it is talking to Kolonka.** Every Kolonka tab has `LC_TERMINAL=Kolonka` and `LC_TERMINAL_VERSION=<version>` in its environment; the script does nothing (exit code 3) when `LC_TERMINAL` is not `Kolonka`, so it never prints junk into other terminals. The OpenSSH client of Windows does not send `LC_*` variables on its own; add to `%USERPROFILE%\.ssh\config`:
+   ```
+   Host *
+     SendEnv LC_TERMINAL LC_TERMINAL_VERSION
+   ```
+   The server's sshd must accept them: Debian and Ubuntu do by default (`AcceptEnv LANG LC_*` in `/etc/ssh/sshd_config`); elsewhere add `AcceptEnv LC_TERMINAL LC_TERMINAL_VERSION`. Tabs Kolonka opens itself always send them (`-o SendEnv=…`).
+3. **tmux** (3.3 or newer) drops escape sequences it does not know unless passthrough is on. In `~/.tmux.conf` on the server:
+   ```
+   set -g allow-passthrough on
+   set -ga update-environment " LC_TERMINAL LC_TERMINAL_VERSION"
+   ```
+   The script wraps its sequences for tmux by itself when `$TMUX` is set, and asks tmux for `LC_TERMINAL` of the current client, so a tmux session started from another terminal works once you attach to it from Kolonka. GNU screen is not supported.
+
+### Opening tabs
+
+`kolonka open` asks for a tab connected to **the same server** (`--same`, the default) or to another host (`--host H`, a name from your `~/.ssh/config`, `user@host` or an address). Kolonka builds the command itself — `ssh.exe -t -o SendEnv=LC_TERMINAL -o SendEnv=LC_TERMINAL_VERSION [options] -- <host> <command>` — and starts ssh.exe directly, without a shell; the command is one argument that only the shell on the server interprets. With no command you get a login shell. `--name`, `--ws` (a workspace by name, created if needed) and `--no-select` work as for `kolonka new`.
+
+"The same server" is found this way: for a tab Kolonka opened over ssh, it is the connection Kolonka made. For a tab where you typed `ssh …` yourself (in Git Bash, PowerShell or cmd), Kolonka looks for the `ssh.exe` running under the tab's shell (through the Windows process list) and takes its destination and only these options: `-p -l -i -J -4 -6`. Everything else (`-o`, `-F`, forwardings, `-A`…) is left out — put such settings into `~/.ssh/config` instead. If the tab is in a nested ssh (ssh from the server to another one), "same" still means the server the tab connected to.
+
+ssh.exe is the one set in `remote.ssh`, otherwise the OpenSSH client of Windows (`%SystemRoot%\System32\OpenSSH\ssh.exe`), otherwise the one of Git for Windows.
+
+A tab opened by a server is **marked to reconnect**: when Kolonka starts, it runs its ssh command again (and when the connection ends, <kbd>Enter</kbd> reconnects).
+
+### Who may open tabs
+
+Terminal output is not trusted: any program on the server — or `cat` of a file — can print these sequences. So:
+
+- **Only ssh tabs may open tabs.** A request from a tab that is not an ssh session right now (no ssh.exe under it, not opened by Kolonka over ssh) is refused, so `cat` of a downloaded file in a local shell cannot open anything. (`"fromLocalTabs": true` lets local tabs ask for a named host — with the same checks below.)
+- **Unknown hosts need your yes.** A host in `remote.allowHosts` opens without a question: `"myserver"` allows `myserver` and `user@myserver`, `"leo@myserver"` only that. Otherwise Kolonka asks: *Tab "build" on myserver wants to open a tab running: …* — **Allow once**, **Always for this host** (remembered in `state.json`; `kolonka remote hosts` lists them, `kolonka remote forget HOST` drops one) or **Deny**. For `--same` the host in question is the server the tab is connected to; for `--host` it is the other host, which matters: connecting to a host offers it your keys (and your agent, if you forward it).
+- **The command is shown as it is.** A command with control or bidi characters is refused rather than shown cleaned up; tab names and notification texts are cut to 80 / 300 characters with control characters removed.
+- **No ssh options from the server.** The server names a host (checked against `^[A-Za-z0-9._@\[\]:-]+$`, never starting with `-`) and a command, never ssh options or an ssh command line, so it cannot use `ProxyCommand`, `LocalCommand` or `-F` to run something on your computer.
+- **Limits.** At most 10 open requests and 10 notifications per tab per minute; the rest are dropped (and noted in `logs\main.log`).
+- **Off switch.** `"remote": { "enabled": false }` ignores all of it.
+
+Status and rename requests need no permission: they only change how the tab looks.
+
+### Notifications from other tools
+
+Besides `kolonka notify`, Kolonka shows the notifications other terminals understand: `OSC 9 ; <text>` (iTerm2, Windows Terminal — not ConEmu's `9;N;…` commands) and `OSC 777 ; notify ; <title> ; <body>` (urxvt, Ghostty). They work in local tabs too.
+
+### Claude Code on a server
+
+`kolonka hooks print --remote` prints hooks for `~/.claude/settings.json` **on the server**: the same four events as the local hooks, calling `~/.local/bin/kolonka status …`. They are silent, print nothing on stdout (Claude Code would add it to the prompt) and exit 0 when the script is missing or the terminal is not Kolonka.
+
+The script writes to `/dev/tty`, which a hook has as long as Claude Code itself runs in a terminal and starts hooks in its own session (it does as of this writing). If the status does not change in your setup, Claude Code's own terminal notifications are a fallback: `claude config set --global preferredNotifChannel iterm2` makes it print `OSC 9` notifications, which Kolonka shows (you get notifications, not the status glyph).
+
+### The escape sequences
+
+For script authors: `ESC ] 7711 ; <action> ; key=value ; … BEL` (or `ESC \` instead of `BEL`). Values are standard base64 of UTF-8 (padding optional) except `select` and `state`; unknown keys are ignored.
+
+| Action | Fields |
+|---|---|
+| `open` | `host=` (required; `@same` or a host), `cmd=`, `name=`, `ws=`, `select=0\|1` (default 1) |
+| `status` | `state=idle\|active\|blocked\|done` (`blocked` = needs you) |
+| `notify` | `title=`, `text=` |
+| `rename` | `name=` |
+
+```sh
+b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
+printf '\033]7711;open;host=%s;cmd=%s;name=%s\007' "$(b64 @same)" "$(b64 'htop')" "$(b64 top)" > /dev/tty
+# inside tmux, wrapped:
+printf '\033Ptmux;\033\033]7711;status;state=blocked\007\033\\' > /dev/tty
+```
+
 ## Configuration
 
 `%APPDATA%\Kolonka\settings.json` (⚙ → *Open settings.json*; restart to apply). Put only the options you want to change there — everything else keeps its default, and new defaults reach you with updates. Comments (`//`, `/* */`) and trailing commas are allowed. If the file cannot be read, Kolonka says so in the window (and in `logs\main.log`) and runs with the defaults; the file itself is left untouched. Font size changed with <kbd>Ctrl</kbd>+<kbd>=</kbd>/<kbd>-</kbd> and a dragged sidebar width are remembered until you set `fontSize` / `sidebarWidth` here. Kolonka 0.1.0 wrote a copy of all its defaults into this file; an untouched copy like that is replaced once by the short template (the old file is kept as `settings.json.bak-0.1.0`), an edited one is left as it is.
@@ -179,6 +264,13 @@ The hooks call Kolonka's launcher, so they work without Node.js in `PATH`. Outsi
   "apiPort": 47811,                       // falls back to a random port if busy
   "notifications": true,
   "backgroundMaterial": "mica",           // mica | acrylic | tabbed | none
+  "restore": "fresh",                     // fresh | rerun: re-run the command of every tab at startup
+  "remote": {                             // remote control over ssh
+    "enabled": true,
+    "allowHosts": ["myserver"],           // may open tabs without asking
+    "ssh": "",                            // path to ssh.exe; empty = Windows OpenSSH, then Git for Windows
+    "fromLocalTabs": false
+  },
   "shells": {                             // optional extra shells
     "nu": { "label": "Nushell", "file": "C:/Program Files/nu/bin/nu.exe", "args": [], "env": {} }
   },

@@ -32,7 +32,9 @@ run and type refuse a command that contains their own options (-t --enter --wait
 
 Sessions
   new [--ws W] [--name N] [--cwd DIR] [--shell bash|pwsh|powershell|cmd]
-      [--after T] [--no-select] [COMMAND...]      create, prints the id; Restart runs COMMAND again
+      [--after T] [--no-select] [--rerun] [COMMAND...]
+                                    create, prints the id; Restart runs COMMAND again,
+                                    --rerun also runs it when Kolonka starts
   select [-t T]                     switch to it
   rename NAME [-t T]                rename
   mv --ws W [-t T] [--index N]      move to a workspace / position
@@ -61,6 +63,12 @@ Other
   screenshot [FILE.png]             save a PNG of the window
   api                               API address and token (for curl)
   hooks print|status|install|uninstall   Claude Code status hooks (~/.claude/settings.json)
+  hooks print --remote              the same hooks for Claude Code on a server (kolonka-remote)
+
+Remote control over ssh (README: "Remote control over SSH")
+  remote install HOST [--yes]       put the kolonka-remote script on a server as ~/.local/bin/kolonka
+  remote hosts                      hosts that may open tabs without asking
+  remote forget HOST                drop a host allowed with "Always for this host"
 `;
 
 function die(msg, code = 1) { process.stderr.write('kolonka: ' + msg + '\n'); process.exit(code); }
@@ -82,7 +90,7 @@ function parse(argv) {
     if (pos.length === 1 && RAW_COMMANDS.includes(pos[0]) && !isOption) { rest = argv.slice(i); break; }
     if (a.startsWith('--')) {
       const [k, v] = a.slice(2).split(/=(.*)/s);
-      const flag = ['json', 'all', 'enter', 'no-select', 'force', 'quiet', 'screen', 'exit', 'help', 'skip-echo'].includes(k);
+      const flag = ['json', 'all', 'enter', 'no-select', 'force', 'quiet', 'screen', 'exit', 'help', 'skip-echo', 'rerun', 'remote', 'yes'].includes(k);
       if (v !== undefined) opt[k] = v;
       else if (flag) opt[k] = true;
       else opt[k] = argv[++i];
@@ -232,7 +240,7 @@ async function main() {
       return die('unknown ws subcommand ' + sub);
     }
     case 'new': {
-      const body = { workspace: opt.ws, name: opt.name, cwd: opt.cwd ? path.resolve(opt.cwd) : undefined, shell: opt.shell, select: !opt['no-select'], after: opt.after };
+      const body = { workspace: opt.ws, name: opt.name, cwd: opt.cwd ? path.resolve(opt.cwd) : undefined, shell: opt.shell, select: !opt['no-select'], after: opt.after, rerun: opt.rerun ? true : undefined };
       if (words.length) body.command = words.join(' ');
       const r = await request('POST', '/api/sessions', body);
       return process.stdout.write(r.id + '\n');
@@ -300,13 +308,31 @@ async function main() {
     }
     case 'hooks': {
       const sub = pos[0] || 'print';
-      if (sub === 'print') return json({ hooks: hooks.plan() });
+      if (sub === 'print') return json({ hooks: opt.remote ? hooks.remotePlan() : hooks.plan() });
       if (sub === 'status') return process.stdout.write((hooks.installed() ? 'installed' : 'not installed') + ' — ' + hooks.settingsFile() + '\n');
       if (sub === 'install' || sub === 'uninstall') {
         const f = hooks.install(sub === 'uninstall');
         return process.stdout.write((sub === 'uninstall' ? 'Hooks removed from ' : 'Hooks installed into ') + f + ' (backup: settings.json.kolonka-backup)\n');
       }
       return die('hooks print|status|install|uninstall');
+    }
+    case 'remote': {
+      const sub = pos[0];
+      if (sub === 'install') {
+        if (!pos[1]) die('remote install HOST');
+        process.exitCode = require('./remote').install(pos[1], { yes: !!opt.yes });
+        return;
+      }
+      if (sub === 'hosts') {
+        const r = await request('GET', '/api/remote');
+        if (opt.json) return json(r);
+        process.stdout.write(`remote control: ${r.enabled ? 'on' : 'off'}\n`);
+        for (const h of r.allowHosts) process.stdout.write(`${h}\t(settings.json)\n`);
+        for (const h of r.remembered) process.stdout.write(`${h}\t(always for this host)\n`);
+        return;
+      }
+      if (sub === 'forget') { if (!pos[1]) die('remote forget HOST'); await request('DELETE', '/api/remote/hosts/' + enc(pos[1])); return; }
+      return die('remote install|hosts|forget');
     }
     default: die(`unknown command: ${cmd}\n\n${HELP}`);
   }

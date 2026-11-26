@@ -19,6 +19,9 @@ const DEFAULT_SETTINGS = {
   backgroundMaterial: 'mica',
   startDir: null,
   sidebarWidth: 264,
+  // when Kolonka starts: "fresh" runs commands only of tabs marked rerun (opened by a server over ssh),
+  // "rerun" runs the command of every tab that has one
+  restore: 'fresh',
   dictation: {
     enabled: true,
     key: 'Space',
@@ -27,6 +30,13 @@ const DEFAULT_SETTINGS = {
     language: 'auto',
     device: '',
     autoEnter: false,
+  },
+  // remote control over ssh (OSC 7711, see README)
+  remote: {
+    enabled: true,
+    allowHosts: [],       // hosts that may open tabs without asking
+    ssh: '',              // path to ssh.exe; empty = Windows OpenSSH, then Git for Windows
+    fromLocalTabs: false, // let tabs that are not ssh sessions ask to open tabs too
   },
 };
 

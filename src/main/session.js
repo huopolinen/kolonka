@@ -8,6 +8,9 @@ const { parseOsc7 } = require('./shells');
 const { isSafeLocalPath } = require('./paths');
 const { stripAnsi } = require('./ansi');
 const { OutputLog } = require('./outlog');
+const { parseRemoteOsc, notifyFromOsc9, notifyFromOsc777 } = require('./remote');
+
+const VERSION = require('../../package.json').version;
 
 class Session extends EventEmitter {
   constructor(opts) {
@@ -18,6 +21,8 @@ class Session extends EventEmitter {
     this.cwd = opts.cwd;
     this.shellKey = opts.shellKey;
     this.command = opts.command || null; // initial command, if any; kept for restarts
+    this.ssh = opts.ssh || null;         // { destination, options, cmd } for a tab opened over ssh (shell = ssh.exe)
+    this.rerun = !!opts.rerun;           // run the command again when Kolonka starts
     this._runCommand = opts.runCommand !== false; // false when restoring a saved layout
     this.status = 'idle';     // idle | active | blocked | done
     this.unread = false;
@@ -50,6 +55,15 @@ class Session extends EventEmitter {
     this.term.parser.registerOscHandler(7, (data) => { this._setCwd(parseOsc7(data)); return true; });
     this.term.parser.registerOscHandler(9, (data) => {
       if (data.startsWith('9;')) { this._setCwd(data.slice(2).replace(/^"|"$/g, '')); return true; }
+      const n = notifyFromOsc9(data);
+      if (n) { this.emit('remote', n); return true; }
+      return false;
+    });
+    // remote control (src/main/remote.js); the model decides what is allowed
+    this.term.parser.registerOscHandler(7711, (data) => { this.emit('remote', parseRemoteOsc(data)); return true; });
+    this.term.parser.registerOscHandler(777, (data) => {
+      const n = notifyFromOsc777(data);
+      if (n) { this.emit('remote', n); return true; }
       return false;
     });
     this.term.onTitleChange((t) => { this.title = t; this.emit('meta', 'title'); });
@@ -59,6 +73,9 @@ class Session extends EventEmitter {
       COLORTERM: 'truecolor',
       TERM_PROGRAM: 'kolonka',
       KOLONKA_SESSION: this.id,
+      // what programs on a server see (with SendEnv / AcceptEnv): kolonka-remote checks it
+      LC_TERMINAL: 'Kolonka',
+      LC_TERMINAL_VERSION: VERSION,
     });
     if (this._pathPrepend) {
       const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
@@ -190,6 +207,8 @@ class Session extends EventEmitter {
       exited: this.exited,
       exitCode: this.exitCode,
       command: this.command,
+      remote: this.ssh ? { host: this.ssh.destination, cmd: this.ssh.cmd } : null,
+      rerun: this.rerun,
       seq: this.seq,
       cols: this.cols,
       rows: this.rows,
