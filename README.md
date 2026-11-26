@@ -188,6 +188,16 @@ npm start            # run from source
 npm run dist         # build dist/Kolonka-Setup-<version>.exe
 ```
 
+Tests use Node's built-in runner, no extra dependencies:
+
+```sh
+npm test             # unit tests (test/*.test.js)
+npm run pack         # build dist/win-unpacked
+npm run smoke        # start the packaged app, drive it through the CLI and quit it (Windows)
+```
+
+CI runs all three on every pull request.
+
 Stack: [Electron](https://www.electronjs.org/), [xterm.js](https://xtermjs.org/) (WebGL renderer, headless mirror for the API), [node-pty](https://github.com/microsoft/node-pty) on ConPTY, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) for voice input.
 
 ## Roadmap

@@ -5,6 +5,7 @@ const { app, dialog, shell, crashReporter } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { redact } = require('./redact');
 
 const MAX_LOG = 1024 * 1024;
 const ISSUE_URL_LIMIT = 7600; // GitHub rejects very long /issues/new URLs
@@ -136,17 +137,8 @@ class Crash {
   }
 
   redact(s) {
-    let out = String(s || '');
-    const home = os.homedir();
     const user = (() => { try { return os.userInfo().username; } catch { return ''; } })();
-    const host = os.hostname();
-    const variants = [home, home.replace(/\\/g, '/'), home.replace(/\\/g, '\\\\'), '/' + home[0].toLowerCase() + home.slice(2).replace(/\\/g, '/')];
-    for (const v of variants) if (v && v.length > 3) out = out.split(v).join('~');
-    if (user && user.length > 2) out = out.replace(new RegExp(escapeRe(user), 'gi'), '<user>');
-    if (host && host.length > 2) out = out.replace(new RegExp(escapeRe(host), 'gi'), '<host>');
-    out = out.replace(/(Bearer|token["']?\s*[:=]\s*["']?)[A-Za-z0-9_\-.]{12,}/gi, '$1<redacted>');
-    out = out.replace(/(sk|gsk|gho|ghp)_[A-Za-z0-9_\-]{10,}/g, '<redacted>');
-    return out;
+    return redact(s, { home: os.homedir(), user, host: os.hostname() });
   }
 
   // Open a pre-filled GitHub issue. The user sees it before anything is sent.
@@ -188,6 +180,5 @@ function fmt(x) {
   if (typeof x === 'object') { try { return JSON.stringify(x); } catch { return String(x); } }
   return String(x);
 }
-function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 module.exports = { Crash };

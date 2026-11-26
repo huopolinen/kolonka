@@ -10,7 +10,9 @@
     "dev": "set KOLONKA_DEBUG=1&& electron .",
     "icon": "electron tools/make-icon.js",
     "dist": "electron-builder --win nsis",
-    "pack": "electron-builder --win dir"
+    "pack": "electron-builder --win dir",
+    "test": "node --test \"test/**/*.test.js\"",
+    "smoke": "node test/smoke/packaged.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

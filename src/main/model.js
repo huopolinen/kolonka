@@ -3,18 +3,17 @@
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
-const { Session, stripAnsi } = require('./session');
+const { stripAnsi } = require('./ansi');
+const { ApiError } = require('./errors');
 const { homeDir } = require('./shells');
 
 const STATUSES = ['idle', 'active', 'blocked', 'done'];
 
-class ApiError extends Error {
-  constructor(code, message) { super(message); this.code = code; }
-}
-
 class Model extends EventEmitter {
-  constructor({ dataDir, settings, shells, env, pathPrepend }) {
+  // Session: the session class; tests pass a fake one so the model can run without node-pty.
+  constructor({ dataDir, settings, shells, env, pathPrepend, Session }) {
     super();
+    this.Session = Session || require('./session').Session;
     this.extraEnv = env || {};
     this.pathPrepend = pathPrepend || null;
     this.dataDir = dataDir;
@@ -194,7 +193,7 @@ class Model extends EventEmitter {
   // ---------- sessions ----------
   _spawn({ id, name, workspaceId, cwd, shellKey, command, index }) {
     const key = this.shells[shellKey] ? shellKey : this.defaultShellKey();
-    const s = new Session({
+    const s = new this.Session({
       id, name, workspaceId, cwd, shellKey: key, command,
       shell: this.shells[key], cols: this.lastSize.cols, rows: this.lastSize.rows,
       env: this.extraEnv, pathPrepend: this.pathPrepend,
