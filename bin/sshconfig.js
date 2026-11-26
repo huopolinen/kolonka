@@ -207,9 +207,10 @@ function encodeConfig({ text, bom, encoding }) {
 function homeDir(env = process.env) { return env.USERPROFILE || os.homedir(); }
 function configFile(home = homeDir()) { return path.join(home, '.ssh', 'config'); }
 
-// The file limited to the current user (inheritance removed, full control for DOMAIN\user), the way
-// src/main/acl.js limits control.json. OpenSSH for Windows refuses a config that someone else may write
-// to ("Bad owner or permissions", check_secure_file_permission in its readconf.c).
+// The file limited to the current user, the way src/main/acl.js limits control.json: inherited entries
+// removed, full control for DOMAIN\user. Explicit entries a new file gets from the creator's default DACL
+// (SYSTEM, Administrators) stay; OpenSSH for Windows allows exactly those besides the owner and refuses a
+// config anyone else may write to ("Bad owner or permissions", check_secure_file_permission in readconf.c).
 function restrictToUser(file, { env = process.env, run = execFile } = {}) {
   if (!env.USERNAME) return Promise.reject(new Error('unknown user name'));
   const who = env.USERDOMAIN ? `${env.USERDOMAIN}\\${env.USERNAME}` : env.USERNAME;
