@@ -97,7 +97,8 @@ async function main() {
   startApp();
   const control = await waitFor('control.json', 60000, async () => {
     if (app.exitCode !== null) throw new Error(`Kolonka exited early with code ${app.exitCode}`);
-    try { return JSON.parse(fs.readFileSync(CONTROL, 'utf8')); } catch { return null; }
+    // main.js first writes {} to protect the file (KOLONKA_DATA outside the profile), the API then fills it in
+    try { const c = JSON.parse(fs.readFileSync(CONTROL, 'utf8')); return c && c.url && c.token ? c : null; } catch { return null; }
   });
   log('API is up at', control.url);
 
