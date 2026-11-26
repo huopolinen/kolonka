@@ -152,7 +152,8 @@ async function main() {
 // The very first start (an empty data folder) and a command typed into the first tab right away, the way a
 // script drives a freshly installed Kolonka: Git Bash must get every character of it. A fresh Git Bash tab
 // once lost the first character ("cho: command not found") or the whole command when the input came while
-// the shell was still starting and the window had not yet sized the tab. Each run uses a new data folder.
+// the shell was still starting and the window had not yet sized the tab. Each run uses a new data folder:
+// FIRST_RUNS runs as in the live run (`wait --idle 800` first), then FIRST_RUNS that type at once.
 const FIRST_RUNS = Number(process.env.KOLONKA_SMOKE_FIRST_RUNS) || 5;
 const FIRST_RUN_PORT = PORT + 1;
 const GIT_BASH = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe');
@@ -160,14 +161,17 @@ const GIT_BASH = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git
 async function checkFirstRunInput() {
   if (!fs.existsSync(GIT_BASH)) { log(`first run: no Git Bash at ${GIT_BASH}, skipped`); return; }
   const failed = [];
-  for (let i = 1; i <= FIRST_RUNS; i++) {
-    try { await firstRun(i); } catch (e) { failed.push(`run ${i}: ${e.message}`); }
+  const runs = [];
+  for (let i = 1; i <= FIRST_RUNS; i++) runs.push({ name: `${i} (idle first)`, idle: true });
+  for (let i = 1; i <= FIRST_RUNS; i++) runs.push({ name: `${i} (at once)`, idle: false });
+  for (const r of runs) {
+    try { await firstRun(r.name, r); } catch (e) { failed.push(`run ${r.name}: ${e.message}`); }
   }
-  if (failed.length) throw new Error(`first run: ${failed.length} of ${FIRST_RUNS} lost the typed command:\n  ${failed.join('\n  ')}`);
-  log(`first run: ${FIRST_RUNS} of ${FIRST_RUNS} got the command intact`);
+  if (failed.length) throw new Error(`first run: ${failed.length} of ${runs.length} lost the typed command:\n  ${failed.join('\n  ')}`);
+  log(`first run: ${runs.length} of ${runs.length} got the command intact`);
 }
 
-async function firstRun(i) {
+async function firstRun(i, { idle }) {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'kolonka-first-'));
   const control = path.join(data, 'control.json');
   fs.writeFileSync(path.join(data, 'settings.json'), JSON.stringify({ backgroundMaterial: 'none', dictation: { enabled: false }, apiPort: FIRST_RUN_PORT }));
@@ -183,8 +187,9 @@ async function firstRun(i) {
       if (proc.exitCode !== null) throw new Error(`Kolonka exited early with code ${proc.exitCode}`);
       try { const c = JSON.parse(fs.readFileSync(control, 'utf8')); return c && c.url && c.token ? c : null; } catch { return null; }
     });
-    // exactly the calls of the run that failed: wait for a pause in the output, then run and wait for the result
-    await cliIn(data, 'wait', '-t', 's1', '--idle', '800');
+    // the calls of the run that failed: wait for a pause in the output, then run and wait for the result;
+    // or type as soon as the API is up
+    if (idle) await cliIn(data, 'wait', '-t', 's1', '--idle', '800');
     const before = JSON.parse(await cliIn(data, 'info', '-t', 's1'));
     if (before.shell !== 'bash') throw new Error(`the first tab is ${before.shell}, not Git Bash`);
     let matched;
